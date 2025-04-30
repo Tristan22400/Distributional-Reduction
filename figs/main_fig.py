@@ -268,6 +268,6 @@ fig.tight_layout()
 fig.subplots_adjust(wspace=.7)
 # plt.text(.405, 0.22, r'Coupling $\mathbf{T}$', fontsize=ftsize)
 
-plt.savefig('fig_general.pdf', bbox_inches='tight')
+plt.savefig('main_fig.pdf', bbox_inches='tight')
 plt.show()
 

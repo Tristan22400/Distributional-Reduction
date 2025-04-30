@@ -4,7 +4,7 @@ Implementation of DR methods inherent in most benchmark methods to compute C_X a
 
 import torch
 from tqdm import tqdm
-from gwdr.src.affinities import (
+from src.affinities import (
     SymmetricEntropicAffinity,
     BistochasticAffinity,
     BaseAffinity,
@@ -14,8 +14,8 @@ from gwdr.src.affinities import (
     SparseLogAffinity,
     UnnormalizedAffinity_
 )
-from gwdr.src.utils import PCA
-from gwdr.src.utils_hyperbolic import sampleLorentzNormal
+from src.utils import PCA
+from src.utils_hyperbolic import sampleLorentzNormal
 
 import geoopt
 

@@ -6,17 +6,17 @@ import torch
 import numpy as np
 import matplotlib.pyplot as plt
 
-from gwdr.local_ot.gromov._semirelaxed import (
+from local_ot.gromov._semirelaxed import (
     semirelaxed_gromov_wasserstein,
     entropic_semirelaxed_gromov_wasserstein,
 )
 
-from gwdr.local_ot.gromov_low_rank._semirelaxed import (
+from local_ot.gromov_low_rank._semirelaxed import (
     semirelaxed_gromov_wasserstein_low_rank_structures,
     entropic_semirelaxed_gromov_wasserstein_low_rank_structures,
 )
 
-from gwdr.src.affinities import GramAffinity
+from src.affinities import GramAffinity
 
 
 def grid(vmax=1, n_points=1000):

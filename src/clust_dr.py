@@ -1,6 +1,6 @@
 """
 Contains classes to run all methods involved in the benchmark, namely:
-    - Our method Distributional Reduction DistR, in the class GWDR
+    - Our method Distributional Reduction DistR
     - COOTClust
     - Clust_then_DR
     - DR_then_Clust
@@ -14,27 +14,27 @@ from sklearn.cluster import KMeans
 from sklearn.cluster import SpectralClustering
 
 from ot.gromov import gwloss, init_matrix
-from gwdr.local_ot.gromov._utils import init_matrix_semirelaxed
-from gwdr.local_ot.gromov._semirelaxed import (
+from local_ot.gromov._utils import init_matrix_semirelaxed
+from local_ot.gromov._semirelaxed import (
     semirelaxed_gromov_wasserstein,
     entropic_semirelaxed_gromov_wasserstein,
 )
 
-from gwdr.src.affinities import GramAffinity
+from src.affinities import GramAffinity
 
 from ot.backend import get_backend
 from ot.coot import co_optimal_transport
 
-from gwdr.src.affinities import (
+from src.affinities import (
     BaseAffinity,
     LogAffinity,
     NanError,
     UnnormalizedAffinity_,
     SparseLogAffinity)
 
-from gwdr.src.utils import barycenter_feat, KMeans # GPU friendly version of kmeans used for spectral clustering
-from gwdr.src.utils_hyperbolic import sampleLorentzNormal
-from gwdr.src.dimension_reduction import AffinityMatcher
+from src.utils import barycenter_feat, KMeans # GPU friendly version of kmeans used for spectral clustering
+from src.utils_hyperbolic import sampleLorentzNormal
+from src.dimension_reduction import AffinityMatcher
 
 import geoopt
 
@@ -116,7 +116,7 @@ class DataSummarizer:
         self.tol = tol
         self.seed = seed
         self.device = device
-        self.generator = torch.Generator(self.device)
+        self.generator = torch.Generator('cpu')  # Always use CPU generator
         self.generator.manual_seed(seed)
         self.dtype = dtype
         self.losses = []
@@ -203,14 +203,24 @@ class DataSummarizer:
             self.Z = self.init.to(self.device)
 
         elif self.init == "normal":
-            self.Z = torch.normal(
-                0,
-                1,
-                size=(self.output_sam, self.output_dim),
-                dtype=self.dtype,
-                device=self.device,
-                generator=self.generator,
-            )
+            if self.device != 'cpu':
+                # Create on CPU first, then move to device
+                self.Z = torch.normal(
+                    0,
+                    1,
+                    size=(self.output_sam, self.output_dim),
+                    dtype=self.dtype,
+                    generator=self.generator,
+                ).to(device=self.device)
+            else:
+                self.Z = torch.normal(
+                    0,
+                    1,
+                    size=(self.output_sam, self.output_dim),
+                    dtype=self.dtype,
+                    device=self.device,
+                    generator=self.generator,
+                )
         elif self.init == "WrappedNormal":
             self.Z = geoopt.ManifoldTensor(
                 sampleLorentzNormal(
@@ -503,7 +513,7 @@ class AffinityBasedDataSummarizer(DataSummarizer):
             raise WrongParameter("Affinity data not implemented")
 
 
-class GWDR(AffinityBasedDataSummarizer):
+class DistR(AffinityBasedDataSummarizer):
     """
     This class solves the joint Clust-DR problem using Gromov-Wasserstein producing a compressed representation of the data (in both row and column axis).
     If alpha < 1 is provided, the algorithm uses fused Gromov-Wasserstein [2].
@@ -550,7 +560,7 @@ class GWDR(AffinityBasedDataSummarizer):
         Either to take into account the constant marginal terms or not in the GW loss, by default False.
 
     [2] Titouan Vayer, Laetitia Chapel, Rémi Flamary, Romain Tavenard and Nicolas Courty
-    “Optimal Transport for structured data with application on graphs” International Conference on Machine Learning (ICML). 2019.
+    "Optimal Transport for structured data with application on graphs" International Conference on Machine Learning (ICML). 2019.
 
     """
 
@@ -578,7 +588,7 @@ class GWDR(AffinityBasedDataSummarizer):
         early_stopping=True,
     ):
 
-        super(GWDR, self).__init__(
+        super(DistR, self).__init__(
             affinity_data=affinity_data,
             affinity_embedding=affinity_embedding,
             output_sam=output_sam,
