@@ -1,292 +1,312 @@
-import numpy as np
-from sklearn.manifold import MDS
-import torch
-import matplotlib.pyplot as plt
-from tqdm import tqdm
-import torch.nn as nn
-from matplotlib.offsetbox import OffsetImage, AnnotationBbox
 from PIL import Image
-from sklearn.manifold import MDS
+from matplotlib.offsetbox import OffsetImage, AnnotationBbox
+import torch
+import numpy as np
+import torch.distributions as D
 import torch.nn.functional as F
-import random
+from src.utils import plan_color
 
+import geoopt
+import matplotlib.pyplot as plt
+import math
 
-def init_bounds(f, n: int, begin=None, end=None, device="cpu"):
-    if begin is None:
-        begin = torch.ones(n, dtype=torch.double, device=device)
+def minkowski_ip(x, y, keepdim=True):
+    if len(x.shape) == 1:
+        x = x.reshape(1, -1)
+    if len(y.shape) == 1:
+        y = y.reshape(1, -1)
+
+    if x.shape[0] != y.shape[0]:
+        return -x[..., 0][None] * y[..., 0][:, None] + torch.sum(
+            x[..., 1:][None] * y[..., 1:][:, None], axis=-1
+        )
     else:
-        begin = begin * torch.ones(n, dtype=torch.double, device=device)
+        return (-x[..., 0] * y[..., 0])[:, None] + torch.sum(
+            x[..., 1:] * y[..., 1:], axis=-1, keepdim=True
+        )
 
-    if end is None:
-        end = torch.ones(n, dtype=torch.double, device=device)
+
+def minkowski_ip2(x, y):
+    """
+    Return a n x m matrix where n and m are the number of batchs of x and y.
+    """
+    return -x[:, 0][None] * y[:, 0][:, None] + torch.sum(
+        x[:, 1:][None] * y[:, 1:][:, None], axis=-1
+    )
+
+
+def lorentz_to_poincare(y, r=1):
+    return r * y[..., 1:] / (r + y[..., 0][:, None])
+
+
+def poincare_to_lorentz(x):
+    norm_x = torch.norm(x, dim=-1, keepdim=True)
+    return torch.cat([1 + norm_x**2, 2 * x], dim=-1) / (1 - norm_x**2)
+
+
+def sum_mobius(z, y, r=1):
+    ip = torch.sum(z * y, axis=-1)
+    y_norm2 = torch.sum(y**2, axis=-1)
+    z_norm2 = torch.sum(z**2, axis=-1)
+    num = (1 + 2 * r * ip + r * y_norm2)[:, None] * z + (1 - r * z_norm2)[:, None] * y
+    denom = 1 + 2 * r * ip + r**2 * z_norm2 * y_norm2
+    return num / denom[:, None]
+
+
+def prod_mobius(r, x):
+    norm_x = torch.sum(x**2, axis=-1) ** (1 / 2)
+    return torch.tanh(r[:, None] * torch.arctanh(norm_x)) * x / norm_x
+
+
+def dist_poincare(x, y, r=1):
+    num = torch.linalg.norm(x - y, axis=-1) ** 2
+    denom = (1 - r * torch.linalg.norm(y, axis=-1) ** 2) * (
+        1 - r * torch.linalg.norm(x, axis=-1) ** 2
+    )
+    frac = num / denom
+    return torch.arccosh(1 + 2 * r * frac) / np.sqrt(r)
+
+
+def dist_poincare2(x, y, r=1):
+    num = torch.linalg.norm(x[:, None] - y[None], axis=-1) ** 2
+    denom = (1 - r * torch.linalg.norm(y, axis=-1) ** 2)[None] * (
+        1 - r * torch.linalg.norm(x, axis=-1) ** 2
+    )[:, None]
+    frac = num / denom
+    return torch.arccosh(1 + 2 * r * frac) / np.sqrt(r)
+
+
+def parallelTransport(v, x0, x1):
+    """
+    Transport v\in T_x0 H to u\in T_x1 H by following the geodesics by parallel transport
+    """
+    n, d = v.shape
+    if len(x0.shape) == 1:
+        x0 = x0.reshape(-1, d)
+    if len(x1.shape) == 1:
+        x1 = x1.reshape(-1, d)
+
+    u = v + minkowski_ip(x1, v) * (x0 + x1) / (1 - minkowski_ip(x1, x0))
+    return u
+
+
+def expMap(u, x):
+    """
+    Project u\in T_x H to the surface
+    """
+
+    if len(x.shape) == 1:
+        x = x.reshape(1, -1)
+
+    norm_u = minkowski_ip(u, u) ** (1 / 2)
+    y = torch.cosh(norm_u) * x + torch.sinh(norm_u) * u / norm_u
+    return y
+
+
+def lambd(x, r=1):
+    norm_x = torch.norm(x, dim=-1, keepdim=True)
+    return 2 / (1 - r * norm_x**2)
+
+
+def exp_poincare(v, x):
+    """
+    Project v\in T_x B to the Poincaré ball
+    """
+    lx = lambd(x)
+    norm_v = torch.norm(v, dim=-1, keepdim=True)
+
+    ch = torch.cosh(torch.clamp(lx * norm_v, min=-20, max=20))
+    th = torch.tanh(lx * norm_v)
+    normalized_v = v / torch.clamp(norm_v, min=1e-6)
+    ip_xv = torch.sum(x * normalized_v, dim=-1, keepdim=True)
+
+    num1 = lx * (1 + ip_xv * th) * x
+    num2 = th * normalized_v
+    denom = 1 / ch + (lx - 1) + lx * ip_xv * th
+
+    return (num1 + num2) / denom
+
+
+def log_poincare(v, x, r=1.):
+    lx = lambd(x, r)
+    print('lambda:', lx, lx.shape)
+    mob = sum_mobius(-x, v, r)
+    print('mob:', mob, mob.shape)
+    norm_mob = torch.clamp(torch.norm(mob, dim=-1, keepdim=True), min=1e-15)
+    print('norm_mob :', norm_mob, norm_mob.shape)
+    ath = torch.arctanh(math.sqrt(r) * norm_mob)
+    num = 2 * ath * mob
+    print('num:', num, num.shape)
+    denum = math.sqrt(r) * lx * norm_mob
+    print('denum:', denum, denum.shape)
+    return num / denum[:, None]
+    
+    
+def sampleWrappedNormal(mu, Sigma, n, seed=0):
+    device = mu.device
+
+    d = len(mu)
+    normal = D.MultivariateNormal(torch.zeros((d - 1,), device=device), Sigma)
+    x0 = torch.zeros((1, d), device=device)
+    x0[0, 0] = 1
+
+    # Sample in T_x0 H
+    torch.manual_seed(seed)
+    v_ = normal.sample((n,))
+    v = F.pad(v_, (1, 0))
+
+    # Transport to T_\mu H and project on H
+    u = parallelTransport(v, x0, mu)
+    y = expMap(u, mu)
+
+    return y
+
+
+def sampleLorentzNormal(n, dim=3, scale=1, device="cpu", seed=0):
+    mu = torch.zeros(dim, device=device)
+    mu[0] = 1  # the base point has one on its first corrdinate in the Lorentz model
+    Sigma0 = scale * torch.eye(dim - 1, dtype=torch.float, device=device)
+    return sampleWrappedNormal(mu, Sigma0, n, seed)
+
+
+# **************** Vizualization part ********************************************************
+
+
+def add_geodesic_grid(ax: plt.Axes, manifold: geoopt.Stereographic, line_width=0.1):
+
+    # define geodesic grid parameters
+    N_EVALS_PER_GEODESIC = 10000
+    STYLE = "--"
+    COLOR = "gray"
+    LINE_WIDTH = line_width
+
+    # get manifold properties
+    K = manifold.k.item()
+    R = manifold.radius.item()
+
+    # get maximal numerical distance to origin on manifold
+    if K < 0:
+        # create point on R
+        r = torch.tensor((R, 0.0), dtype=manifold.dtype)
+        # project point on R into valid range (epsilon border)
+        r = manifold.projx(r)
+        # determine distance from origin
+        max_dist_0 = manifold.dist0(r).item()
     else:
-        end = end * torch.ones(n, dtype=torch.double, device=device)
+        max_dist_0 = np.pi * R
+    # adjust line interval for spherical geometry
+    circumference = 2 * np.pi * R
 
-    out_begin = f(begin) > 0
-    while out_begin.any():
-        end[out_begin] = torch.min(end[out_begin], begin[out_begin])
-        begin[out_begin] /= 2
-        out_begin = f(begin) > 0
+    # determine reasonable number of geodesics
+    # choose the grid interval size always as if we'd be in spherical
+    # geometry, such that the grid interpolates smoothly and evenly
+    # divides the sphere circumference
+    n_geodesics_per_circumference = 4 * 6  # multiple of 4!
+    n_geodesics_per_quadrant = n_geodesics_per_circumference // 2
+    grid_interval_size = circumference / n_geodesics_per_circumference
+    if K < 0:
+        n_geodesics_per_quadrant = int(max_dist_0 / grid_interval_size)
 
-    out_end = f(end) < 0
-    while out_end.any():
-        begin[out_end] = torch.max(begin[out_end], end[out_end])
-        end[out_end] *= 2
-        out_end = f(end) < 0
+    # create time evaluation array for geodesics
+    if K < 0:
+        min_t = -1.2 * max_dist_0
+    else:
+        min_t = -circumference / 2.0
+    t = torch.linspace(min_t, -min_t, N_EVALS_PER_GEODESIC)[:, None]
 
-    return begin, end
+    # define a function to plot the geodesics
+    def plot_geodesic(gv):
+        ax.plot(*gv.t().numpy(), STYLE, color=COLOR, linewidth=LINE_WIDTH)
+
+    # define geodesic directions
+    u_x = torch.tensor((0.0, 1.0))
+    u_y = torch.tensor((1.0, 0.0))
+
+    # add origin x/y-crosshair
+    o = torch.tensor((0.0, 0.0))
+    if K < 0:
+        x_geodesic = manifold.geodesic_unit(t, o, u_x)
+        y_geodesic = manifold.geodesic_unit(t, o, u_y)
+        plot_geodesic(x_geodesic)
+        plot_geodesic(y_geodesic)
+    else:
+        # add the crosshair manually for the sproj of sphere
+        # because the lines tend to get thicker if plotted
+        # as done for K<0
+        ax.axvline(0, linestyle=STYLE, color=COLOR, linewidth=LINE_WIDTH)
+        ax.axhline(0, linestyle=STYLE, color=COLOR, linewidth=LINE_WIDTH)
+
+    # add geodesics per quadrant
+    for i in range(1, n_geodesics_per_quadrant):
+        i = torch.as_tensor(float(i))
+        # determine start of geodesic on x/y-crosshair
+        x = manifold.geodesic_unit(i * grid_interval_size, o, u_y)
+        y = manifold.geodesic_unit(i * grid_interval_size, o, u_x)
+
+        # compute point on geodesics
+        x_geodesic = manifold.geodesic_unit(t, x, u_x)
+        y_geodesic = manifold.geodesic_unit(t, y, u_y)
+
+        # plot geodesics
+        plot_geodesic(x_geodesic)
+        plot_geodesic(y_geodesic)
+        if K < 0:
+            plot_geodesic(-x_geodesic)
+            plot_geodesic(-y_geodesic)
 
 
-def false_position(
-    f,
-    n: int,
-    begin: torch.Tensor = None,
-    end: torch.Tensor = None,
-    max_iter: int = 1000,
-    tol: float = 1e-9,
-    verbose: bool = False,
-    device="cpu",
+def plotGrid(ax, lw=0.3):
+    manifold = geoopt.PoincareBall(c=1)
+    circle = plt.Circle((0, 0), 1, color="k", linewidth=3, fill=False)
+    ax.add_patch(circle)
+    add_geodesic_grid(ax, manifold, line_width=lw)
+
+
+def plotPoincareFromLorentz(
+    X, T, Y, ax, lw=0.3, cmap=plt.cm.get_cmap("tab10"), size_factor=1, thres=3
 ):
-    """
-    Performs the false position method to find the root of an increasing function f.
-
-    Parameters
-    ----------
-    f: function
-        function which root should be computed
-    n: int
-        size of the input of f
-    begin: tensor, shape (n), optional
-        initial lower bound of the root
-    begin: tensor, shape (n), optional
-        initial upper bound of the root
-    max_iter: int
-        maximum iterations of search
-    tol: float
-        precision threshold at which the algorithm stops
-    verbose: bool
-        if True, prints the mean of current bounds
-    """
-
-    begin, end = init_bounds(f=f, n=n, begin=begin, end=end, device=device)
-    f_begin, f_end = f(begin), f(end)
-    m = begin - ((begin - end) / (f(begin) - f(end))) * f(begin)
-    fm = f(m)
-
-    pbar = tqdm(range(max_iter), disable=not verbose)
-    for _ in pbar:
-        if torch.max(torch.abs(fm)) < tol:
-            break
-        sam = fm * f_begin > 0
-        begin = sam * m + (~sam) * begin
-        f_begin = sam * fm + (~sam) * f_begin
-        end = (~sam) * m + sam * end
-        f_end = (~sam) * fm + sam * f_end
-        m = begin - ((begin - end) / (f_begin - f_end)) * f_begin
-        fm = f(m)
-
-        if verbose:
-            mean_f = fm.mean().item()
-            std_f = fm.std().item()
-            pbar.set_description(
-                f"f values : {float(mean_f): .3e} ({float(std_f): .3e}), "
-                f"begin mean : {float(begin.mean().item()): .6e}, "
-                f"end mean : {float(end.mean().item()): .6e} "
-            )
-    return m, begin, end
+    plotGrid(ax, lw)
+    c, s = plan_color(T, Y)
+    proj_poincare = lorentz_to_poincare(X)
+    ids = torch.where(T.sum(0) > thres)[0]
+    ax.scatter(
+        proj_poincare[ids, 0],
+        proj_poincare[ids, 1],
+        s=s[ids] * size_factor,
+        c=c[ids],
+        cmap=cmap,
+    )
+    ax.axis("off")
+    ax.axis("equal")
+    ax.set_xlim(-1.1, 1.1)
+    ax.set_ylim(-1.1, 1.1)
 
 
-def log_selfsink(
-    C: torch.Tensor,
-    eps: float = 1.0,
-    f: torch.Tensor = None,
-    tol: float = 1e-5,
-    max_iter: int = 1000,
-    student: bool = False,
-    tolog: bool = False,
+def plotPoincareFromLorentzImages(
+    Z,
+    centroid,
+    T,
+    Y,
+    ax,
+    zoom=0.2,
+    thres=0.005,
+    title="",
+    size=10,
+    lw=0.3,
+    color=None,
+    cmap=plt.cm.get_cmap("tab10"),
+    frame_width=2,
 ):
-    """
-    Performs Sinkhorn iterations in log domain to solve the entropic "self" (or "symmetric") OT problem with symmetric cost C and entropic regularization epsilon.
-    Returns the transport plan and dual variable at convergence.
-
-    Parameters
-    ----------
-    C: array (n,n)
-        symmetric distance matrix
-    eps: float
-        entropic regularization coefficient
-    f: tensor, shape (n), optional
-        initial dual variable
-    tol: float, optional
-        precision threshold at which the algorithm stops
-    max_iter: int, optional
-        maximum number of Sinkhorn iterations
-    student: bool, optional
-        if True, a Student-t kernel is considered instead of Gaussian
-    tolog: bool
-        if True, log and returns intermediate variables
-    """
-    n = C.shape[0]
-
-    # Allows a warm-start if a dual variable f is provided
-    f = torch.zeros(n) if f is None else f.clone().detach()
-
-    if tolog:
-        log = {}
-        log["f"] = [f.clone().detach()]
-
-    # If student is True, considers the Student-t kernel instead of Gaussian
-    if student:
-        C = torch.log(1 + C)
-
-    # Sinkhorn iterations
-    for k in range(max_iter + 1):
-        f = 0.5 * (f - eps * torch.logsumexp((f - C) / eps, -1))
-
-        if tolog:
-            log["f"].append(f.clone().detach())
-
-        if torch.isnan(f).any():
-            raise Exception(f"NaN in self-Sinkhorn dual variable at iteration {k}")
-
-        log_T = (f[:, None] + f[None, :] - C) / eps
-        if (torch.abs(torch.exp(torch.logsumexp(log_T, -1)) - 1) < tol).all():
-            break
-
-        if k == max_iter - 1:
-            print("---------- Max iter attained ----------")
-
-    if tolog:
-        return (f[:, None] + f[None, :] - C) / eps, f, log
-    else:
-        return (f[:, None] + f[None, :] - C) / eps, f
-
-
-def entropy(P: torch.Tensor, log: bool = False, ax: int = -1):
-    """
-    Returns the entropy of P along axis ax, supports log domain input.
-
-    Parameters
-    ----------
-    P: array (n,n)
-        input data
-    log: bool
-        if True, assumes that P is in log domain
-    ax: int
-        axis on which entropy is computed
-    """
-    if log:
-        return -(torch.exp(P) * (P - 1)).sum(ax)
-    else:
-        return -(P * (torch.log(P) - 1)).sum(ax)
-
-
-def kl_div(P: torch.Tensor, K: torch.Tensor, log: bool = False):
-    """
-    Returns the Kullback-Leibler divergence between P and K, supports log domain input for both matrices.
-
-    Parameters
-    ----------
-    P: array
-        input data
-    K: array
-        input data
-    log: bool
-        if True, assumes that P and K are in log domain
-    """
-    if log:
-        return (torch.exp(P) * (P - K - 1)).sum()
-    else:
-        return (P * (torch.log(P / K) - 1)).sum()
-
-
-def svd_flip(u, v):
-    # columns of u, rows of v
-    max_abs_cols = torch.argmax(torch.abs(u), 0)
-    i = torch.arange(u.shape[1]).to(u.device)
-    signs = torch.sign(u[max_abs_cols, i])
-    u *= signs
-    v *= signs.view(-1, 1)
-    return u, v
-
-
-class PCA(nn.Module):
-    # PCA implementation in torch that matches the scikit-learn implementation
-    # see https://github.com/gngdb/pytorch-pca
-    def __init__(self, n_components):
-        super().__init__()
-        self.n_components = n_components
-
-    @torch.no_grad()
-    def fit(self, X):
-        n, d = X.size()
-        if self.n_components is not None:
-            d = min(self.n_components, d)
-        self.register_buffer("mean_", X.mean(0, keepdim=True))
-        Z = X - self.mean_  # center
-        U, S, Vh = torch.linalg.svd(Z, full_matrices=False)
-        Vt = Vh
-        U, Vt = svd_flip(U, Vt)
-        self.register_buffer("components_", Vt[:d])
-        return self
-
-    def forward(self, X):
-        return self.transform(X)
-
-    def transform(self, X):
-        assert hasattr(self, "components_"), "PCA must be fit before use."
-        return torch.matmul(X - self.mean_, self.components_.t())
-
-    def fit_transform(self, X):
-        self.fit(X)
-        return self.transform(X)
-
-    def inverse_transform(self, Y):
-        assert hasattr(self, "components_"), "PCA must be fit before use."
-        return torch.matmul(Y, self.components_) + self.mean_
-
-
-def barycenter_feat(X, T):
-    h_ = T.sum(0)
-    zeros = torch.argwhere(h_ == 0)[:, 0]
-    h_[zeros] = 1.0
-    Xbar = T.T @ X
-    Xbar /= h_[:, None]
-    return Xbar
-
-
-def barycenter_structure(C, T, reduce_size=False):
-    h_ = T.sum(0)
-    prod = T.T @ C @ T
-    if reduce_size:
-        non_zeros = torch.argwhere(h_ != 0)[:, 0]
-        h = h_[non_zeros]
-        Cbar = prod[non_zeros, :][:, non_zeros]
-        Cbar /= h[:, None] * h[None, :]
-    else:
-        zeros = torch.argwhere(h_ == 0)[:, 0]
-        h_[zeros] = 1.0
-        Cbar = prod / (h_[:, None] * h_[None, :])
-
-    return Cbar
-
-
-def barycenter_graph(C, T):
-    h_ = T.sum(0)
-    sc = torch.diag(1 / h_)
-    C_ = sc @ T.T @ C @ T @ sc
-    return C_
-
-
-def plot_gwdr(Z, centroid, T, Y, zoom=0.2, thres=0.005, title="", ax=None):
+    plotGrid(ax, lw)
+    proj_poincare = lorentz_to_poincare(Z)
     p = centroid.shape[-1]
     n = centroid.shape[0]
     c, s = plan_color(T, Y)
     ids = torch.where(T.sum(0) > thres)[0]
     ax.scatter(
-        Z[ids, 0],
-        Z[ids, 1],
-        cmap=plt.cm.get_cmap("tab10"),
+        proj_poincare[ids, 0],
+        proj_poincare[ids, 1],
+        cmap=cmap,
         alpha=0.5,
         c=c[ids],
         s=s[ids],
@@ -294,182 +314,16 @@ def plot_gwdr(Z, centroid, T, Y, zoom=0.2, thres=0.005, title="", ax=None):
     Xbar_im = centroid.reshape(n, int(p ** (0.5)), int(p ** (0.5)))
     for _, i in enumerate(ids):
         img = Image.fromarray(Xbar_im[i].numpy())
+
         ab = AnnotationBbox(
             OffsetImage(img, zoom=1.5e-1 * np.sqrt(s[i]) * zoom, cmap="gray"),
-            (Z[i, 0], Z[i, 1]),
+            (proj_poincare[i, 0], proj_poincare[i, 1]),
             frameon=True,
         )
         ax.add_artist(ab)
-    title = f"{title}"
-    ax.set_title(title)
 
-
-def plot_graph(C, ax=None, binary=False, s=None, c=None):
-    # C = np.array((C + C.T) / 2)
-    x = MDS(dissimilarity="precomputed", random_state=0).fit_transform(1 - C)
-    if ax is None:
-        ax = plt
-    for j in range(C.shape[0]):
-        for i in range(j):
-            if binary:
-                if C[i, j] > 0:
-                    ax.plot(
-                        [x[i, 0], x[j, 0]], [x[i, 1], x[j, 1]], alpha=0.2, color="k"
-                    )
-            else:  # connection intensity proportional to C[i,j]
-                ax.plot(
-                    [x[i, 0], x[j, 0]], [x[i, 1], x[j, 1]], alpha=C[i, j], color="k"
-                )
-    n = x.shape[0]
-    # if c is None:
-    #     c = np.arange(n)/n
-    ax.scatter(x[:, 0], x[:, 1], c=c, s=s, zorder=10, edgecolors="k", cmap="rainbow")
-    # for i,point in enumerate(x):
-    #     ax.annotate(i, (point[0], point[1]), c='red')
-
-
-def plan_color(T, Y):
-    encoded_Y = F.one_hot(Y)
-    weighted_encoded_Y = T.T @ encoded_Y.to(dtype=T.dtype)
-    labels = torch.argmax(weighted_encoded_Y, dim=1)
-    s = T.sum(0)
-    return labels, s
-
-#%%
-class KMeans(object):
-    def __init__(
-        self,
-        n_clusters=8,
-        n_init=10,
-        init="k-means++",
-        max_iter=300,
-        tol=1e-4,
-        random_state=0,
-        verbose=True,
-    ):
-        self.n_clusters = n_clusters
-        self.n_init = n_init
-        self.init = init
-        self.max_iter = max_iter
-        self.tol = tol
-        self.random_state = random_state
-        
-        self.verbose = verbose
-        self.labels_ = None
-        self.cluster_centers_ = None
-    
-    def pairwise_dists(self, X, Y):
-        
-        return torch.cdist(X, Y, p=2)
-    
-    def init_centroids(self, X):
-        if self.verbose:
-            print("-- init centroids --")
-        random.seed(self.random_state)
-
-        if self.init == "random":
-            centroids = X[random.sample(range(X.shape[0]), self.n_clusters), :]
-
-        elif self.init == "k-means++":
-
-            centroids = torch.zeros(
-                (self.n_clusters, X.shape[-1]), dtype=X.dtype, device=X.device
-            )
-            indices = set(range(X.shape[0]))
-
-            for i in range(self.n_clusters):
-
-                if i == 0:
-                    idx = random.sample(range(X.shape[0]), self.n_clusters)[0]
-                    centroids[i] = X[idx].clone()
-                    indices.remove(idx)
-                else:
-                    
-                    l_indices = list(indices)
-                    if i == 1: # only one centroid still
-                        distances = self.pairwise_dists(X[l_indices], centroids[0][None, :])
-                    else:
-                        distances = self.pairwise_dists(X[l_indices], centroids[:i])
-                    
-                    idx = distances.sum(dim=1).argmax().item()
-                    centroids[i] = X[l_indices[idx]]
-                    indices.remove(l_indices[idx])
-
-        return centroids
-
-
-    def fit(self, X):
-        n_samples = X.shape[0]
-
-        self.inertia = None
-
-        for run_it in range(self.n_init):
-            centroids = self.init_centroids(X)
-
-            for it in tqdm(
-                range(self.max_iter), desc="fit kmeans (seed = %s)" % run_it
-            ):
-                distances = self.pairwise_dists(centroids, X)
-                
-                
-                labels = distances.argmin(dim=1)
-
-                new_centroids = torch.zeros(
-                    (self.n_clusters, X.shape[-1]), dtype=X.dtype, device=X.device
-                )
-                for i in range(self.n_clusters):
-                    indices = torch.where(labels == i)[0]
-                    
-                    if len(indices) > 0:
-                        new_centroids[i, :] = X[indices].mean(dim=0)
-                        
-                    else:  # handle empty cluster
-
-                        new_centroids[i, :] = X[random.sample(range(n_samples), 1), :]
-
-                diff_distances = 0.0
-                for i in range(self.n_clusters):
-                    diff_distances += self.pairwise_dists(
-                        centroids[i, None], new_centroids[i, None]).item()
-
-                if self.verbose:
-                    print(
-                        f"Seed : {run_it} / step: {it} / diff_distances: {diff_distances}"
-                    )
-                centroids = new_centroids.clone()
-                if diff_distances < self.tol:
-                    break
-
-            distances = self.pairwise_dists(centroids, X)
-            
-            labels = distances.argmin(dim=1)
-
-            inertia = 0.0
-            for i in range(self.n_clusters):
-                indices = torch.where(labels == i)[0]
-                inertia += distances[indices, i].sum().item()
-
-            if (self.inertia == None) or (inertia < self.inertia):
-                self.inertia = inertia
-                self.labels_ = labels.clone()
-                self.cluster_centers_ = centroids.clone()
-
-            if self.verbose:
-                print("Iteration: {} - Best Inertia: {}".format(run_it, self.inertia))
-
-    def fit_predict(self, X):
-        self.fit(X)
-        return self.labels_
-
-    def fit_transform(self, X):
-        self.fit(X)
-        return self.transform(X)
-
-    def predict(self, X):
-        distances = self.transform(X)
-        return distances.argmin(dim=1)
-
-    def transform(self, X):
-        distances = self.pairwise_dists(self.cluster_centers_, X)
-
-        return distances
+    ax.set_title(f"{title}")
+    ax.axis("off")
+    ax.axis("equal")
+    ax.set_xlim(-1.1, 1.1)
+    ax.set_ylim(-1.1, 1.1)

@@ -3,19 +3,19 @@ Implementation of functions to compute our joint DR/clustering score.
 """
 
 import torch
-from gwdr.src.utils import plan_color
+from src.utils import plan_color
 from torchmetrics.clustering import (
     AdjustedRandScore,
     NormalizedMutualInfoScore,
     AdjustedMutualInfoScore,
     HomogeneityScore,
 )
-from gwdr.src.utils_hyperbolic import minkowski_ip2, lorentz_to_poincare, log_poincare
+from src.utils_hyperbolic import minkowski_ip2, lorentz_to_poincare, log_poincare
 import random
 from tqdm import tqdm
 
 from geoopt.optim import RiemannianAdam
-from gwdr.src.affinities import NanError
+from src.affinities import NanError
 
 
 # %%
