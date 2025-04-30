@@ -20,8 +20,8 @@ Implementation of the paper [Distributional Reduction: Unifying Dimensionality R
 
 * [Hugues Van Assel](https://huguesva.github.io/)
 * [Cédric Vincent-Cuaz](https://cedricvincentcuaz.github.io/)
-* [Nicolas Courty](https://github.com/ncourty)
-* [Rémi Flamary](https://github.com/rflamary)
+* [Nicolas Courty](https://ncourty.github.io/)
+* [Rémi Flamary](https://remi.flamary.com/)
 * [Pascal Frossard](https://people.epfl.ch/pascal.frossard)
-* [Titouan Vayer](https://github.com/tvayer)
+* [Titouan Vayer](https://tvayer.github.io/)
 
