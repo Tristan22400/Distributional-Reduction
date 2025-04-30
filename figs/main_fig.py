@@ -54,7 +54,6 @@ Z = model.fit_transform(X)
 A = model.affinity_data.compute_affinity(X)
 B = model.affinity_embedding.compute_affinity(Z)
 
-B_perm = model.T @ B @ model.T.T
 A_alpha = A.float().numpy()
 A_alpha = A_alpha / A_alpha.max()
 B_alpha = B.float().numpy()
@@ -154,8 +153,6 @@ for i  in range(Z.shape[0]):
                 linewidth=3,
                 zorder=0)
 ax.scatter(Z[:,0],Z[:,1], s=200 ,alpha=1, zorder=1, c=model.T.T @ np.array(c_))
-# ax.set_xticks([])
-# ax.set_yticks([])
 ax.yaxis.tick_right()
 ax.set_yticklabels([])
 ax.set_xticklabels([])
@@ -163,10 +160,9 @@ ax.set_xticklabels([])
 ax.set_xlim(Z[:,0].min()-1, Z[:,0].max()+1)
 ax.set_ylim(Z[:,1].min()-1, Z[:,1].max()+1)
 ax.spines['top'].set_visible(False)
-# ax.spines['right'].set_visible(False)
-# ax.spines['bottom'].set_visible(False)
 ax.spines['left'].set_visible(False)
 ax.set_title(r'Embedding $\mathbf{Z}$',fontsize=ftsize)
+
 ## --- hyperbolic part
 
 ax = fig.add_subplot(223, projection="3d")
@@ -185,7 +181,6 @@ ax.set_title(r'Input $\mathbf{X}$',fontsize=ftsize)
 
 ax = fig.add_subplot(224)
 plotPoincareFromLorentz(Z_H,model_H.T, torch.from_numpy(y).to(torch.int64), ax,lw=0.1,size_factor=60, thres=1)
-#ax.set_title('Hyperbolic Embedding space',fontsize=20)
 proj_poincare = lorentz_to_poincare(Z_H)
 
 # Plot the edges
@@ -266,7 +261,6 @@ inset.set_title(r'$\mathbf{C}_Z(\mathbf{Z})$ (Lorentz)', fontsize=ftsize)
 
 fig.tight_layout()
 fig.subplots_adjust(wspace=.7)
-# plt.text(.405, 0.22, r'Coupling $\mathbf{T}$', fontsize=ftsize)
 
 plt.savefig('main_fig.pdf', bbox_inches='tight')
 plt.show()
