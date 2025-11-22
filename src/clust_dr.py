@@ -498,7 +498,7 @@ class AffinityBasedDataSummarizer(DataSummarizer):
             )
 
         if isinstance(self.affinity_data, (BaseAffinity, SparseLogAffinity)):
-            self.PX = self.affinity_data.compute_affinity(self.X)
+            self.PX = self.affinity_data.compute_affinity(self.X).to(dtype=self.dtype)
         elif self.affinity_data == "precomputed":
             if self.X.shape[0] != self.X.shape[1]:
                 raise WrongInputFitError(
