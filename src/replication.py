@@ -53,11 +53,11 @@ def evaluate_prototypes(Z, T, Y_true, X):
     return our_scores
 
 def run_experiment(data_dict, dataset_name, n_prototypes=50, device='cuda', 
-                   affinity_data=None, affinity_embeddings=None, output_dim=2, loss_function="kl_loss"):
+                   affinity_data=None, affinity_embeddings=None, output_dim=2, loss_function="kl_loss", seed=0):
     """
-    Runs DistR and Baselines on a single dataset.
+    Runs DistR and Baselines on a single dataset with a specific seed.
     """
-    print(f"=== Running Experiment on {dataset_name} ===")
+    print(f"=== Running Experiment on {dataset_name} (Seed={seed}) ===")
     print(f"Configuration: N={data_dict['X'].shape[0]}, Prototypes={n_prototypes}, Device={device}")
     
     # OPTIMIZATION: Use float32 for faster GPU computation (Tensor Cores)
@@ -90,7 +90,8 @@ def run_experiment(data_dict, dataset_name, n_prototypes=50, device='cuda',
         device=device,
         dtype=torch.float32,
         init="normal",
-        init_T="kmeans"
+        init_T="kmeans",
+        seed=seed
     )
     Z_distr = model_distr.fit_transform(X)
     metrics_distr = evaluate_prototypes(Z_distr, model_distr.T, Y, X)
@@ -108,7 +109,8 @@ def run_experiment(data_dict, dataset_name, n_prototypes=50, device='cuda',
         device=device,
         dtype=torch.float32,
         init="normal",
-        init_T="kmeans"
+        init_T="kmeans",
+        seed=seed
     )
     Z_drc = model_drc.fit_transform(X)
     metrics_drc = evaluate_prototypes(Z_drc, model_drc.T, Y, X)
@@ -126,7 +128,8 @@ def run_experiment(data_dict, dataset_name, n_prototypes=50, device='cuda',
         device=device,
         dtype=torch.float32,
         init="normal",
-        init_T="kmeans"
+        init_T="kmeans",
+        seed=seed
     )
     Z_cdr = model_cdr.fit_transform(X)
     metrics_cdr = evaluate_prototypes(Z_cdr, model_cdr.T, Y, X)
@@ -136,37 +139,50 @@ def run_experiment(data_dict, dataset_name, n_prototypes=50, device='cuda',
     return results
 
 def plot_prototype_evolution(prototype_counts, data_dict, dataset_name, device='cuda', 
-                             affinity_data=None, affinity_embeddings=None, output_dim=2, loss_function="kl_loss"):
+                             affinity_data=None, affinity_embeddings=None, output_dim=2, loss_function="kl_loss", n_seeds=3):
     """
-    Iterates over a range of prototype numbers, runs the experiment for each, 
-    and plots the evolution of scores for each method.
+    Iterates over a range of prototype numbers, runs the experiment for each with multiple seeds, 
+    and plots the evolution of scores for each method with variance envelopes.
     """
     
     # Initialize storage for results
-    # Structure: methods -> metrics -> list of values
+    # Structure: methods -> metrics -> list of lists (seeds)
     methods = ['DistR', 'DR_then_Clust', 'Clust_then_DR']
     metrics = ["hom", "ami", "ari", "nmi", "sil"]
     
+    # history[method][metric] will be a list of length len(prototype_counts)
+    # each element will be a list of scores for that prototype count across seeds
     history = {method: {metric: [] for metric in metrics} for method in methods}
     
     for n in prototype_counts:
         print(f"\n\n>>>>> Running for {n} prototypes <<<<<")
-        results = run_experiment(
-            data_dict, 
-            dataset_name, 
-            n_prototypes=n, 
-            device=device,
-            affinity_data=affinity_data,
-            affinity_embeddings=affinity_embeddings,
-            output_dim=output_dim,
-            loss_function=loss_function
-        )
         
+        # Temporary storage for this prototype count
+        current_proto_scores = {method: {metric: [] for metric in metrics} for method in methods}
+        
+        for seed in range(n_seeds):
+            print(f"   --- Seed {seed+1}/{n_seeds} ---")
+            results = run_experiment(
+                data_dict, 
+                dataset_name, 
+                n_prototypes=n, 
+                device=device,
+                affinity_data=affinity_data,
+                affinity_embeddings=affinity_embeddings,
+                output_dim=output_dim,
+                loss_function=loss_function,
+                seed=seed
+            )
+            
+            for method in methods:
+                for metric in metrics:
+                    val = results[method].get(metric, 0)
+                    current_proto_scores[method][metric].append(val)
+        
+        # Append the list of scores for this prototype count to history
         for method in methods:
             for metric in metrics:
-                # Append score, default to 0 if missing
-                val = results[method].get(metric, 0)
-                history[method][metric].append(val)
+                history[method][metric].append(current_proto_scores[method][metric])
                 
     # Plotting
     n_metrics = len(metrics)
@@ -178,7 +194,14 @@ def plot_prototype_evolution(prototype_counts, data_dict, dataset_name, device='
     for i, metric in enumerate(metrics):
         ax = axes[i]
         for method in methods:
-            ax.plot(prototype_counts, history[method][metric], marker='o', label=method)
+            # data: (n_prototypes, n_seeds)
+            data = np.array(history[method][metric])
+            
+            means = np.mean(data, axis=1)
+            stds = np.std(data, axis=1)
+            
+            ax.plot(prototype_counts, means, marker='o', label=method)
+            ax.fill_between(prototype_counts, means - stds, means + stds, alpha=0.2)
             
         ax.set_title(metric.upper())
         ax.set_xlabel("Number of Prototypes")
