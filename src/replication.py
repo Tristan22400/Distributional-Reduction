@@ -1,174 +1,193 @@
 import torch
 import numpy as np
-from sklearn.metrics import homogeneity_score, normalized_mutual_info_score, silhouette_score
-from sklearn.cluster import KMeans
+import matplotlib.pyplot as plt
+from src.clust_dr import DR_then_Clust, Clust_then_DR, DistR
+from src.affinities import NormalizedGaussianAndStudentAffinity, SymmetricEntropicAffinity
+from src.scores import compare_scores_sklearn
 
-from src.dataset_pipeline import load_dataset
-from src.affinities import SymmetricEntropicAffinity, NormalizedGaussianAndStudentAffinity
-from src.clust_dr import DistR
-
-
-
-def get_distr_config(model_type='tsne', perplexity=30):
+def get_majority_vote_labels(T, Y):
     """
-    Get the affinity and loss configuration for DistR.
+    Assigns a class label to each prototype based on the majority class 
+    of the samples mapped to it (weighted by the transport plan T).
+    Operations are fully vectorized on GPU.
+    """
+    # T: (N_samples, n_prototypes) [GPU]
+    # Y: (N_samples,) [CPU/Numpy]
     
-    Args:
-        model_type: Type of model configuration (currently only 'tsne' supported).
-        perplexity: Perplexity for the entropic affinity.
-        
-    Returns:
-        config: Dictionary containing affinity_data, affinity_embedding, and loss_fun.
-    """
-    if model_type == 'tsne':
-        # CX: Symmetric Entropic Affinity
-        affinity_data = SymmetricEntropicAffinity(perp=perplexity, verbose=False)
-        
-        # CZ: Student-t kernel (nu=1 is standard t-SNE, which corresponds to Cauchy)
-        # NormalizedGaussianAndStudentAffinity with student=True gives t-distribution
-        affinity_embedding = NormalizedGaussianAndStudentAffinity(student=True, sigma=1.0, p=2)
-        
-        # Loss: KL divergence
-        loss_fun = 'kl_loss'
-        
-        return {
-            'affinity_data': affinity_data,
-            'affinity_embedding': affinity_embedding,
-            'loss_fun': loss_fun
-        }
-    else:
-        raise ValueError(f"Unknown model_type: {model_type}")
+    n_prototypes = T.shape[1]
+    # Convert Y to GPU tensor once
+    Y_tensor = torch.as_tensor(Y, device=T.device, dtype=torch.long)
+    n_classes = Y_tensor.max().item() + 1
+    
+    # One-hot encode Y to aggregate mass: (N_samples, n_classes)
+    # We use scatter on GPU
+    Y_onehot = torch.zeros((len(Y), n_classes), device=T.device, dtype=T.dtype)
+    Y_onehot.scatter_(1, Y_tensor.unsqueeze(1), 1.0)
+    
+    # Aggregate mass: Project Y onto Prototypes via T^T
+    # vote_matrix: (n_prototypes, n_classes)
+    # This matrix multiplication is the heavy lifting, kept on GPU
+    vote_matrix = torch.mm(T.T, Y_onehot)
+    
+    # Get majority class for each prototype
+    proto_labels = torch.argmax(vote_matrix, dim=1).cpu().numpy()
+    return proto_labels
 
-def run_distr_replication(X, n_prototypes, embedding_dim=2, max_iter=100, device='cpu'):
+def evaluate_prototypes(Z, T, Y_true, X):
     """
-    Run the DistR training loop.
-    
-    Args:
-        X: Input data (torch.Tensor).
-        n_prototypes: Number of prototypes (clusters).
-        embedding_dim: Dimension of the embedding space.
-        max_iter: Maximum number of iterations.
-        device: Device to run on ('cpu' or 'cuda').
+    Computes metrics using the centralized scores implementation.
+    """
+    # Ensure inputs are tensors on the correct device
+    if not isinstance(Z, torch.Tensor):
+        Z = torch.tensor(Z)
+    if not isinstance(T, torch.Tensor):
+        T = torch.tensor(T)
+    if not isinstance(Y_true, torch.Tensor):
+        Y_true = torch.tensor(Y_true, device=T.device)
+    if not isinstance(X, torch.Tensor):
+        X = torch.tensor(X, device=T.device)
         
-    Returns:
-        Z: Learned prototypes (torch.Tensor).
-        T: Transport plan (torch.Tensor).
-        model: The fitted DistR model.
-    """
-    config = get_distr_config()
+    # Call the comparison function
+    our_scores, sklearn_scores = compare_scores_sklearn(T, Z, Y_true, X)
     
-    model = DistR(
-        affinity_data=config['affinity_data'],
-        affinity_embedding=config['affinity_embedding'],
-        loss_fun=config['loss_fun'],
+    return our_scores
+
+def run_experiment(data_dict, dataset_name, n_prototypes=50, device='cuda', 
+                   affinity_data=None, affinity_embeddings=None, output_dim=2, loss_function="kl_loss"):
+    """
+    Runs DistR and Baselines on a single dataset.
+    """
+    print(f"=== Running Experiment on {dataset_name} ===")
+    print(f"Configuration: N={data_dict['X'].shape[0]}, Prototypes={n_prototypes}, Device={device}")
+    
+    # OPTIMIZATION: Use float32 for faster GPU computation (Tensor Cores)
+    # Create tensor directly on device to avoid CPU->GPU copy
+    X = torch.as_tensor(data_dict['X'], dtype=torch.float32, device=device)
+    Y = data_dict['Y'] 
+    
+    # Initialize Affinities if not provided
+    if affinity_data is None:
+        # [cite: 329] Symmetric Entropic Affinity for X
+        affinity_data = SymmetricEntropicAffinity(perp=30, verbose=False) 
+    
+    if affinity_embeddings is None:
+        # [cite: 329] Student t-distribution for Z
+        affinity_embeddings = NormalizedGaussianAndStudentAffinity(student=True) 
+    
+    results = {}
+    
+    # 1. DistR (Ours)
+    print(f"\n[1/3] Training DistR (Device: {device})...")
+    model_distr = DistR(
+        affinity_data=affinity_data,
+        affinity_embedding=affinity_embeddings,
+        output_dim=output_dim,
         output_sam=n_prototypes,
-        output_dim=embedding_dim,
-        optimizer="Adam",
-        lr=1.0, # Standard learning rate for DistR
-        init="normal",
-        max_iter=max_iter,
+        loss_fun=loss_function,       # [cite: 120]
+        optimizer="Adam",         # [cite: 233]
+        lr=0.1,
+        max_iter=200,             # BCD Iterations [cite: 232]
         device=device,
-        verbose=True
+        dtype=torch.float32,
+        init="normal",
+        init_T="kmeans"
     )
-    
-    Z = model.fit_transform(X)
-    T = model.T
-    
-    return Z, T, model
+    Z_distr = model_distr.fit_transform(X)
+    metrics_distr = evaluate_prototypes(Z_distr, model_distr.T, Y, X)
+    results['DistR'] = metrics_distr
+    print(f"DistR Results: {metrics_distr}")
 
-def calculate_metrics(X, Z, T, labels_true):
+    # 2. DR -> Clustering
+    print(f"\n[2/3] Training DR -> Clustering (Device: {device})...")
+    model_drc = DR_then_Clust(
+        affinity_data=affinity_data,
+        affinity_embedding=affinity_embeddings,
+        output_sam=n_prototypes,
+        output_dim=2,
+        loss_fun=loss_function,
+        device=device,
+        dtype=torch.float32,
+        init="normal",
+        init_T="kmeans"
+    )
+    Z_drc = model_drc.fit_transform(X)
+    metrics_drc = evaluate_prototypes(Z_drc, model_drc.T, Y, X)
+    results['DR_then_Clust'] = metrics_drc
+    print(f"DR->C Results: {metrics_drc}")
+
+    # 3. Clustering -> DR
+    print(f"\n[3/3] Training Clustering -> DR (Device: {device})...")
+    model_cdr = Clust_then_DR(
+        affinity_data=affinity_data,
+        affinity_embedding=affinity_embeddings,
+        output_sam=n_prototypes,
+        output_dim=2,
+        loss_fun=loss_function,
+        device=device,
+        dtype=torch.float32,
+        init="normal",
+        init_T="kmeans"
+    )
+    Z_cdr = model_cdr.fit_transform(X)
+    metrics_cdr = evaluate_prototypes(Z_cdr, model_cdr.T, Y, X)
+    results['Clust_then_DR'] = metrics_cdr
+    print(f"C->DR Results: {metrics_cdr}")
+    
+    return results
+
+def plot_prototype_evolution(prototype_counts, data_dict, dataset_name, device='cuda', 
+                             affinity_data=None, affinity_embeddings=None, output_dim=2, loss_function="kl_loss"):
     """
-    Calculate evaluation metrics: Homogeneity, Silhouette, NMI.
-    
-    Args:
-        X: Input data (original or PCA-reduced).
-        Z: Prototypes.
-        T: Transport plan (n_samples, n_prototypes).
-        labels_true: Ground truth labels.
-        
-    Returns:
-        metrics: Dictionary of metric names and values.
+    Iterates over a range of prototype numbers, runs the experiment for each, 
+    and plots the evolution of scores for each method.
     """
-    # Convert to numpy for sklearn
-    if isinstance(T, torch.Tensor):
-        T_np = T.detach().cpu().numpy()
-    else:
-        T_np = T
+    
+    # Initialize storage for results
+    # Structure: methods -> metrics -> list of values
+    methods = ['DistR', 'DR_then_Clust', 'Clust_then_DR']
+    metrics = ["hom", "ami", "ari", "nmi", "sil"]
+    
+    history = {method: {metric: [] for metric in metrics} for method in methods}
+    
+    for n in prototype_counts:
+        print(f"\n\n>>>>> Running for {n} prototypes <<<<<")
+        results = run_experiment(
+            data_dict, 
+            dataset_name, 
+            n_prototypes=n, 
+            device=device,
+            affinity_data=affinity_data,
+            affinity_embeddings=affinity_embeddings,
+            output_dim=output_dim,
+            loss_function=loss_function
+        )
         
-    if isinstance(Z, torch.Tensor):
-        Z_np = Z.detach().cpu().numpy()
-    else:
-        Z_np = Z
+        for method in methods:
+            for metric in metrics:
+                # Append score, default to 0 if missing
+                val = results[method].get(metric, 0)
+                history[method][metric].append(val)
+                
+    # Plotting
+    n_metrics = len(metrics)
+    fig, axes = plt.subplots(1, n_metrics, figsize=(5 * n_metrics, 5))
+    
+    if n_metrics == 1:
+        axes = [axes]
         
-    if isinstance(labels_true, torch.Tensor):
-        labels_true = labels_true.detach().cpu().numpy()
-        
-    # 1. Homogeneity
-    # Assign each sample to the prototype with max transport mass
-    labels_pred = np.argmax(T_np, axis=1)
-    homogeneity = homogeneity_score(labels_true, labels_pred)
-    
-    # 2. Silhouette (Weighted)
-    # The paper mentions "weighted silhouette score on the prototypes Z (Eq. 81/82)".
-    # Standard silhouette_score computes mean silhouette coefficient of all samples.
-    # If we want silhouette on Z, we treat Z as the dataset.
-    # But what are the labels for Z?
-    # The paper says: "We compute the silhouette score of the prototypes Z, weighted by their mass hZ."
-    # And "The labels of the prototypes are assigned by majority voting of the points assigned to them."
-    
-    # Assign labels to prototypes
-    # For each prototype j, find samples i where argmax(T_i) == j
-    # Then take majority vote of labels_true[i]
-    proto_labels = []
-    weights = T_np.sum(axis=0) # hZ
-    
-    for j in range(Z_np.shape[0]):
-        assigned_samples = (labels_pred == j)
-        if np.sum(assigned_samples) > 0:
-            majority_label = np.bincount(labels_true[assigned_samples]).argmax()
-            proto_labels.append(majority_label)
-        else:
-            # Empty cluster, assign -1 or random?
-            proto_labels.append(-1)
-    
-    proto_labels = np.array(proto_labels)
-    
-    # Filter out empty clusters for silhouette calculation if any
-    valid_protos = (proto_labels != -1)
-    if np.sum(valid_protos) > 1: # Need at least 2 clusters
-        # sklearn silhouette_score doesn't directly support sample weights for the *score calculation* itself in the way we might want for "weighted silhouette",
-        # but it does support `sample_weight` parameter which weights the contribution of each sample to the mean.
-        # So we can pass hZ as sample_weight.
-        from sklearn.metrics import silhouette_samples
-        n_samples_z = np.sum(valid_protos)
-        n_labels_z = len(np.unique(proto_labels[valid_protos]))
-        
-        if 1 < n_labels_z < n_samples_z:
-            sample_silhouettes = silhouette_samples(Z_np[valid_protos], proto_labels[valid_protos])
-            silhouette = np.average(sample_silhouettes, weights=weights[valid_protos])
-        else:
-            silhouette = 0.0
-    else:
-        silhouette = 0.0
-        
-    # 3. NMI
-    # "Perform K-Means on prototypes Z, assign labels to samples via T, and compute Normalized Mutual Information against ground truth."
-    # Wait, if we do K-Means on Z, we get cluster labels for Z.
-    # Then we need to propagate these to samples?
-    # Or does it mean: Cluster Z into K clusters (where K = number of ground truth classes),
-    # then assign sample i to the cluster of its assigned prototype.
-    
-    n_classes = len(np.unique(labels_true))
-    kmeans_Z = KMeans(n_clusters=n_classes, random_state=42, n_init=10).fit(Z_np)
-    z_cluster_labels = kmeans_Z.labels_
-    
-    # Assign sample i to cluster of prototype j where j = argmax(T_i)
-    sample_cluster_labels = z_cluster_labels[labels_pred]
-    
-    nmi = normalized_mutual_info_score(labels_true, sample_cluster_labels)
-    
-    return {
-        'Homogeneity': homogeneity,
-        'Silhouette': silhouette,
-        'NMI': nmi
-    }
+    for i, metric in enumerate(metrics):
+        ax = axes[i]
+        for method in methods:
+            ax.plot(prototype_counts, history[method][metric], marker='o', label=method)
+            
+        ax.set_title(metric.upper())
+        ax.set_xlabel("Number of Prototypes")
+        ax.set_ylabel("Score")
+        if i == 0:
+            ax.legend()
+            
+    plt.tight_layout()
+    filename = f"{dataset_name}_prototype_evolution.png"
+    plt.savefig(filename)
+    print(f"Plot saved to {filename}")
+    # plt.show() # Cannot show in headless environment, but saving is good.
