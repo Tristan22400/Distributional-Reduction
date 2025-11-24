@@ -138,79 +138,62 @@ def run_experiment(data_dict, dataset_name, n_prototypes=50, device='cuda',
     
     return results
 
-def plot_prototype_evolution(prototype_counts, data_dict, dataset_name, device='cuda', 
-                             affinity_data=None, affinity_embeddings=None, output_dim=2, loss_function="kl_loss", n_seeds=3):
+def plot_prototype_evolution(results_dict, prototype_counts, methods=['DistR', 'DR_then_Clust', 'Clust_then_DR'], 
+                             metrics=["hom", "ami", "ari", "nmi", "sil"], filename="prototype_evolution.png"):
     """
-    Iterates over a range of prototype numbers, runs the experiment for each with multiple seeds, 
-    and plots the evolution of scores for each method with variance envelopes.
+    Plots the evolution of scores for multiple datasets in a grid.
+    
+    Args:
+        results_dict: Dictionary where keys are dataset names and values are history dictionaries.
+                      history structure: method -> metric -> list of lists (scores across seeds for each proto count)
+        prototype_counts: List of prototype counts used.
+        methods: List of method names to plot.
+        metrics: List of metrics to plot.
+        filename: Output filename for the plot.
     """
+    n_datasets = len(results_dict)
+    n_metrics = len(metrics)
     
-    # Initialize storage for results
-    # Structure: methods -> metrics -> list of lists (seeds)
-    methods = ['DistR', 'DR_then_Clust', 'Clust_then_DR']
-    metrics = ["hom", "ami", "ari", "nmi", "sil"]
+    # Create a grid of subplots: rows = datasets, cols = metrics
+    fig, axes = plt.subplots(n_datasets, n_metrics, figsize=(5 * n_metrics, 5 * n_datasets), squeeze=False)
     
-    # history[method][metric] will be a list of length len(prototype_counts)
-    # each element will be a list of scores for that prototype count across seeds
-    history = {method: {metric: [] for metric in metrics} for method in methods}
+    dataset_names = list(results_dict.keys())
     
-    for n in prototype_counts:
-        print(f"\n\n>>>>> Running for {n} prototypes <<<<<")
+    for row_idx, dataset_name in enumerate(dataset_names):
+        history = results_dict[dataset_name]
         
-        # Temporary storage for this prototype count
-        current_proto_scores = {method: {metric: [] for metric in metrics} for method in methods}
-        
-        for seed in range(n_seeds):
-            print(f"   --- Seed {seed+1}/{n_seeds} ---")
-            results = run_experiment(
-                data_dict, 
-                dataset_name, 
-                n_prototypes=n, 
-                device=device,
-                affinity_data=affinity_data,
-                affinity_embeddings=affinity_embeddings,
-                output_dim=output_dim,
-                loss_function=loss_function,
-                seed=seed
-            )
+        for col_idx, metric in enumerate(metrics):
+            ax = axes[row_idx, col_idx]
             
             for method in methods:
-                for metric in metrics:
-                    val = results[method].get(metric, 0)
-                    current_proto_scores[method][metric].append(val)
-        
-        # Append the list of scores for this prototype count to history
-        for method in methods:
-            for metric in metrics:
-                history[method][metric].append(current_proto_scores[method][metric])
+                # data: (n_prototypes, n_seeds)
+                # We need to ensure we have data for this method/metric
+                if method in history and metric in history[method]:
+                    data = np.array(history[method][metric])
+                    
+                    if data.size > 0:
+                        means = np.mean(data, axis=1)
+                        stds = np.std(data, axis=1)
+                        
+                        ax.plot(prototype_counts, means, marker='o', label=method)
+                        ax.fill_between(prototype_counts, means - stds, means + stds, alpha=0.2)
+            
+            # Set titles and labels
+            if row_idx == 0:
+                ax.set_title(metric.upper(), fontsize=14, fontweight='bold')
+            
+            if col_idx == 0:
+                ax.set_ylabel(f"{dataset_name}\nScore", fontsize=12, fontweight='bold')
+            else:
+                ax.set_ylabel("Score")
                 
-    # Plotting
-    n_metrics = len(metrics)
-    fig, axes = plt.subplots(1, n_metrics, figsize=(5 * n_metrics, 5))
-    
-    if n_metrics == 1:
-        axes = [axes]
-        
-    for i, metric in enumerate(metrics):
-        ax = axes[i]
-        for method in methods:
-            # data: (n_prototypes, n_seeds)
-            data = np.array(history[method][metric])
+            ax.set_xlabel("Number of Prototypes")
             
-            means = np.mean(data, axis=1)
-            stds = np.std(data, axis=1)
-            
-            ax.plot(prototype_counts, means, marker='o', label=method)
-            ax.fill_between(prototype_counts, means - stds, means + stds, alpha=0.2)
-            
-        ax.set_title(metric.upper())
-        ax.set_xlabel("Number of Prototypes")
-        ax.set_ylabel("Score")
-        if i == 0:
-            ax.legend()
-            
+            # Add legend only to the first subplot to avoid clutter
+            if row_idx == 0 and col_idx == 0:
+                ax.legend()
+                
     plt.tight_layout()
-    filename = f"{dataset_name}_prototype_evolution.png"
     plt.savefig(filename)
     print(f"Plot saved to {filename}")
-    # plt.show() # Cannot show in headless environment, but saving is good.
+    # plt.show() # Commented out for headless execution
