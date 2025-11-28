@@ -91,63 +91,74 @@ def load_fmnist(n_samples=10000, pca_dim=50):
 
 def load_coil20(pca_dim=50):
     """Load COIL-20."""
-    # Try to download processed 128x128 version
-    url_proc = "https://www.cs.columbia.edu/CAVE/databases/SLAM_coil-20_2000/coil-20/coil-20-proc.tar.gz"
-    tar_path = os.path.join(DATA_DIR, "coil-20-proc.tar.gz")
-    extract_path = os.path.join(DATA_DIR, "coil-20-proc")
+    # Paths to check
+    possible_paths = [
+        os.path.join(DATA_DIR, "coil-20-proc"),
+        os.path.join(os.path.dirname(__file__), "data", "coil-20-proc"),
+        os.path.join(os.getcwd(), "src", "data", "coil-20-proc"),
+        "./src/data/coil-20-proc"
+    ]
     
-    # Check if we have the data already
-    if not os.path.exists(extract_path) and not os.path.exists(tar_path):
-        try:
-            _download_url(url_proc, tar_path)
-        except Exception as e:
-            print(f"Warning: Failed to download 128x128 COIL-20: {e}")
-            print("Attempting fallback to 32x32 version (COIL20.mat)...")
+    extract_path = None
+    for p in possible_paths:
+        if os.path.exists(p) and os.path.isdir(p):
+            # Check if it contains pngs
+            if any(f.endswith('.png') for f in os.listdir(p)):
+                extract_path = p
+                break
     
-    # If tar exists, extract and load
-    if os.path.exists(tar_path):
-        if not os.path.exists(extract_path):
-            print("Extracting COIL-20...")
-            try:
-                with tarfile.open(tar_path, "r:gz") as tar:
-                    tar.extractall(path=DATA_DIR)
-            except Exception as e:
-                print(f"Failed to extract tar: {e}")
-                # Fallthrough to fallback
+    # If not found, try to download (original logic, but simplified for brevity as user has data)
+    if extract_path is None:
+        print("COIL-20 not found in expected locations. Attempting download...")
+        # ... (keep original download logic if needed, but for now let's focus on loading)
+        # Re-using original download logic structure but pointing to DATA_DIR
+        url_proc = "https://www.cs.columbia.edu/CAVE/databases/SLAM_coil-20_2000/coil-20/coil-20-proc.tar.gz"
+        tar_path = os.path.join(DATA_DIR, "coil-20-proc.tar.gz")
+        extract_path = os.path.join(DATA_DIR, "coil-20-proc")
         
-        if os.path.exists(extract_path):
-            # Read images
-            images = []
-            labels = []
-            img_dir = extract_path
-            # Sometimes it extracts to a subdir, check
-            if not os.path.exists(os.path.join(img_dir, "obj1__0.png")):
-                 # Check children
-                 children = os.listdir(img_dir)
-                 if len(children) == 1 and os.path.isdir(os.path.join(img_dir, children[0])):
-                     img_dir = os.path.join(img_dir, children[0])
+        if not os.path.exists(extract_path):
+             _download_url(url_proc, tar_path)
+             with tarfile.open(tar_path, "r:gz") as tar:
+                tar.extractall(path=DATA_DIR)
+    
+    if os.path.exists(extract_path):
+        # Read images
+        images = []
+        labels = []
+        img_dir = extract_path
+        
+        # Check for subdir nesting
+        if not os.path.exists(os.path.join(img_dir, "obj1__0.png")):
+             children = [d for d in os.listdir(img_dir) if os.path.isdir(os.path.join(img_dir, d))]
+             if len(children) == 1:
+                 img_dir = os.path.join(img_dir, children[0])
 
-            valid_files = [f for f in os.listdir(img_dir) if f.endswith('.png')]
-            valid_files.sort()
-            
-            if not valid_files:
-                 print("No png files found in extracted dir.")
-            else:
-                for fname in valid_files:
-                    if not fname.startswith("obj"):
-                        continue
+        valid_files = [f for f in os.listdir(img_dir) if f.endswith('.png')]
+        valid_files.sort()
+        
+        if not valid_files:
+             print("No png files found in extracted dir.")
+        else:
+            print(f"Loading COIL-20 from {img_dir}...")
+            for fname in valid_files:
+                if not fname.startswith("obj"):
+                    continue
+                # fname format: obj{k}__{i}.png where k is label
+                try:
                     label_str = fname.split("__")[0].replace("obj", "")
-                    label = int(label_str) - 1
-                    
-                    img_path = os.path.join(img_dir, fname)
-                    with Image.open(img_path) as img:
-                        img_arr = np.array(img).astype(np.float32) / 255.0
-                        images.append(img_arr.flatten())
-                        labels.append(label)
+                    label = int(label_str) - 1 # 1-indexed to 0-indexed
+                except ValueError:
+                    continue
                 
-                X = np.array(images)
-                Y = np.array(labels)
-                return X, Y, "coil20"
+                img_path = os.path.join(img_dir, fname)
+                with Image.open(img_path) as img:
+                    img_arr = np.array(img).astype(np.float32) / 255.0
+                    images.append(img_arr.flatten())
+                    labels.append(label)
+            
+            X = np.array(images)
+            Y = np.array(labels)
+            return X, Y, "coil20"
 
     # Fallback: COIL20.mat (32x32)
     url_mat = "http://featureselection.asu.edu/files/datasets/COIL20.mat"
@@ -232,17 +243,54 @@ def load_pbmc(pca_dim=50):
 
 def load_zeisel(pca_dim=50):
     """Load Zeisel (2015)."""
-    # sc.datasets.zeisel() is available in newer scanpy
-    # It has 'level1class' and 'level2class'
+    _ensure_dir(DATA_DIR)
+    file_path = os.path.join(DATA_DIR, 'zeisel.h5ad')
+    
     try:
-        adata = sc.datasets.zeisel()
-    except AttributeError:
-        # Fallback if not in this scanpy version
-        # Download from url?
-        # For now assume it works or fail gracefully.
-        # Actually, let's implement a fallback download if possible.
-        # But sc.datasets is standard.
-        raise ImportError("scanpy.datasets.zeisel() not found. Please update scanpy.")
+        # Try standard load if available
+        if hasattr(sc.datasets, 'zeisel'):
+            adata = sc.datasets.zeisel()
+        elif os.path.exists(file_path):
+            print(f"Loading Zeisel from {file_path}...")
+            adata = sc.read_h5ad(file_path)
+        else:
+            # Manual download from Figshare (zip)
+            # URL from scDRS tutorial: https://figshare.com/ndownloader/files/34300925
+            url = "https://figshare.com/ndownloader/files/34300925"
+            zip_path = os.path.join(DATA_DIR, "zeisel_figshare.zip")
+            
+            print(f"Downloading Zeisel dataset from Figshare...")
+            _download_url(url, zip_path)
+            
+            print("Extracting Zeisel dataset...")
+            import zipfile
+            with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+                # List files to find the h5ad
+                # Expected: single_cell_data/zeisel_2015/expr.h5ad or similar
+                file_list = zip_ref.namelist()
+                h5ad_candidates = [f for f in file_list if f.endswith('.h5ad')]
+                
+                if not h5ad_candidates:
+                    raise FileNotFoundError("No .h5ad file found in the downloaded zip.")
+                
+                # Use the first one found, or prefer one named 'zeisel' or 'expr'
+                target_file = h5ad_candidates[0] # Default
+                for f in h5ad_candidates:
+                    if 'zeisel' in f.lower() or 'expr' in f.lower():
+                        target_file = f
+                        break
+                
+                print(f"Extracting {target_file} to {file_path}...")
+                with zip_ref.open(target_file) as source, open(file_path, 'wb') as target:
+                    shutil.copyfileobj(source, target)
+            
+            # Cleanup zip
+            os.remove(zip_path)
+            
+            adata = sc.read_h5ad(file_path)
+            
+    except Exception as e:
+        raise ImportError(f"Failed to load Zeisel dataset: {e}")
 
     # Preprocess
     X_processed, obs = _preprocess_scanpy(adata)
@@ -250,11 +298,22 @@ def load_zeisel(pca_dim=50):
         X_processed = X_processed.toarray()
         
     # Labels: "both hierarchical label levels"
-    # I will encode Level 1 as the primary Y, but maybe I should return Level 2?
-    # The prompt asks for "Y: np.ndarray of shape (N,)".
-    # I'll use Level 1 (major classes) as it's the most common benchmark.
     # 'level1class' in obs
-    Y_labels = adata.obs['level1class'].values
+    if 'level1class' in adata.obs:
+        Y_labels = adata.obs['level1class'].values
+    else:
+        # Fallback if names differ in this version
+        print("Warning: 'level1class' not found, looking for alternatives...")
+        # Check for likely columns
+        candidates = [c for c in adata.obs.columns if 'class' in c.lower() or 'label' in c.lower()]
+        if candidates:
+            Y_labels = adata.obs[candidates[0]].values
+        else:
+            # Check if it's in uns or elsewhere? No, usually obs.
+            # Print columns for debug
+            print(f"Available obs columns: {adata.obs.columns}")
+            raise ValueError("Could not find label column in Zeisel dataset.")
+
     le = {l: i for i, l in enumerate(np.unique(Y_labels))}
     Y = np.array([le[l] for l in Y_labels])
     
