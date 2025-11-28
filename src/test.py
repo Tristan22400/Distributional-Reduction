@@ -43,7 +43,7 @@ OUTPUT_DIM = 2
 
 # 5. Dataset Loading and Preparation
 # Available datasets: 'coil20', 'mnist', 'fmnist', 'pbmc', 'zeisel'
-DATASETS = ['mnist']
+DATASETS = ['coil20']
 
 # 6. Subset Size
 subset_size = None # Set to None to use the full dataset
@@ -92,13 +92,6 @@ if device == 'cuda':
 # Store results for all datasets
 # Structure: dataset_name -> history (method -> metric -> list of lists)
 all_results = {}
-
-# Define prototype counts to iterate over
-# We need a common set of prototype counts for the plot, 
-# or we can handle different counts per dataset if we really wanted to,
-# but for a grid plot, sharing the x-axis is better.
-# Let's define a standard list, and filter if needed (though usually fixed).
-
 
 # We will use the same prototype counts for all datasets for consistency in plotting
 # If subset_size is small, we filter.
