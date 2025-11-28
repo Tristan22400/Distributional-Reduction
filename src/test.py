@@ -43,7 +43,10 @@ OUTPUT_DIM = 2
 
 # 5. Dataset Loading and Preparation
 # Available datasets: 'coil20', 'mnist', 'fmnist', 'pbmc', 'zeisel'
-DATASETS = [  'coil20', 'mnist', 'fmnist', 'pbmc', 'zeisel']
+DATASETS = ['mnist']
+
+# 6. Subset Size
+subset_size = None # Set to None to use the full dataset
 
 # ==========================================
 # MAIN SCRIPT
@@ -75,9 +78,6 @@ device = 'cuda' if torch.cuda.is_available() else 'cpu'
 print(f"Master Process Device: {device}")
 if device == 'cuda':
     print(f"GPU: {torch.cuda.get_device_name(0)}")
-
-
-subset_size = None # Set to None to use the full dataset
 
 # Store results for all datasets
 # Structure: dataset_name -> history (method -> metric -> list of lists)
