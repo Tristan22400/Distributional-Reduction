@@ -243,17 +243,54 @@ def load_pbmc(pca_dim=50):
 
 def load_zeisel(pca_dim=50):
     """Load Zeisel (2015)."""
-    # sc.datasets.zeisel() is available in newer scanpy
-    # It has 'level1class' and 'level2class'
+    _ensure_dir(DATA_DIR)
+    file_path = os.path.join(DATA_DIR, 'zeisel.h5ad')
+    
     try:
-        adata = sc.datasets.zeisel()
-    except AttributeError:
-        # Fallback if not in this scanpy version
-        # Download from url?
-        # For now assume it works or fail gracefully.
-        # Actually, let's implement a fallback download if possible.
-        # But sc.datasets is standard.
-        raise ImportError("scanpy.datasets.zeisel() not found. Please update scanpy.")
+        # Try standard load if available
+        if hasattr(sc.datasets, 'zeisel'):
+            adata = sc.datasets.zeisel()
+        elif os.path.exists(file_path):
+            print(f"Loading Zeisel from {file_path}...")
+            adata = sc.read_h5ad(file_path)
+        else:
+            # Manual download from Figshare (zip)
+            # URL from scDRS tutorial: https://figshare.com/ndownloader/files/34300925
+            url = "https://figshare.com/ndownloader/files/34300925"
+            zip_path = os.path.join(DATA_DIR, "zeisel_figshare.zip")
+            
+            print(f"Downloading Zeisel dataset from Figshare...")
+            _download_url(url, zip_path)
+            
+            print("Extracting Zeisel dataset...")
+            import zipfile
+            with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+                # List files to find the h5ad
+                # Expected: single_cell_data/zeisel_2015/expr.h5ad or similar
+                file_list = zip_ref.namelist()
+                h5ad_candidates = [f for f in file_list if f.endswith('.h5ad')]
+                
+                if not h5ad_candidates:
+                    raise FileNotFoundError("No .h5ad file found in the downloaded zip.")
+                
+                # Use the first one found, or prefer one named 'zeisel' or 'expr'
+                target_file = h5ad_candidates[0] # Default
+                for f in h5ad_candidates:
+                    if 'zeisel' in f.lower() or 'expr' in f.lower():
+                        target_file = f
+                        break
+                
+                print(f"Extracting {target_file} to {file_path}...")
+                with zip_ref.open(target_file) as source, open(file_path, 'wb') as target:
+                    shutil.copyfileobj(source, target)
+            
+            # Cleanup zip
+            os.remove(zip_path)
+            
+            adata = sc.read_h5ad(file_path)
+            
+    except Exception as e:
+        raise ImportError(f"Failed to load Zeisel dataset: {e}")
 
     # Preprocess
     X_processed, obs = _preprocess_scanpy(adata)
@@ -261,11 +298,22 @@ def load_zeisel(pca_dim=50):
         X_processed = X_processed.toarray()
         
     # Labels: "both hierarchical label levels"
-    # I will encode Level 1 as the primary Y, but maybe I should return Level 2?
-    # The prompt asks for "Y: np.ndarray of shape (N,)".
-    # I'll use Level 1 (major classes) as it's the most common benchmark.
     # 'level1class' in obs
-    Y_labels = adata.obs['level1class'].values
+    if 'level1class' in adata.obs:
+        Y_labels = adata.obs['level1class'].values
+    else:
+        # Fallback if names differ in this version
+        print("Warning: 'level1class' not found, looking for alternatives...")
+        # Check for likely columns
+        candidates = [c for c in adata.obs.columns if 'class' in c.lower() or 'label' in c.lower()]
+        if candidates:
+            Y_labels = adata.obs[candidates[0]].values
+        else:
+            # Check if it's in uns or elsewhere? No, usually obs.
+            # Print columns for debug
+            print(f"Available obs columns: {adata.obs.columns}")
+            raise ValueError("Could not find label column in Zeisel dataset.")
+
     le = {l: i for i, l in enumerate(np.unique(Y_labels))}
     Y = np.array([le[l] for l in Y_labels])
     
