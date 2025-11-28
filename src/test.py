@@ -48,8 +48,15 @@ DATASETS = ['mnist']
 # 6. Subset Size
 subset_size = None # Set to None to use the full dataset
 
-# 7. Number of seeds per experiment
-n_seeds = 1
+# 7. Number of experiment
+n_experiments = 1
+
+# 8. Prototype counts
+standard_prototype_counts = [5, 10, 20, 30, 50, 100]
+
+# 9. Methods
+methods = ['DistR', 'DR_then_Clust', 'Clust_then_DR']
+metrics = ["hom", "ami", "ari", "nmi", "sil"]
 
 # ==========================================
 # MAIN SCRIPT
@@ -91,7 +98,7 @@ all_results = {}
 # or we can handle different counts per dataset if we really wanted to,
 # but for a grid plot, sharing the x-axis is better.
 # Let's define a standard list, and filter if needed (though usually fixed).
-standard_prototype_counts = [5, 10, 20, 30, 50, 100]
+
 
 # We will use the same prototype counts for all datasets for consistency in plotting
 # If subset_size is small, we filter.
@@ -102,9 +109,7 @@ else:
     
 print(f"Iterating over prototype counts: {prototype_counts}")
 
-methods = ['DistR', 'DR_then_Clust', 'Clust_then_DR']
-metrics = ["hom", "ami", "ari", "nmi", "sil"]
-n_seeds = 1 # Number of seeds per experiment
+
 
 for target_dataset in datasets_to_load:
     if target_dataset in loaded_data:
@@ -141,8 +146,8 @@ for target_dataset in datasets_to_load:
             # Temporary storage for this prototype count
             current_proto_scores = {method: {metric: [] for metric in metrics} for method in methods}
             
-            for seed in range(n_seeds):
-                print(f"    -- Seed {seed+1}/{n_seeds} --")
+            for seed in range(n_experiments):
+                print(f"    -- Seed {seed+1}/{n_experiments} --")
                 results = run_experiment(
                     data_subset, 
                     target_dataset, 
