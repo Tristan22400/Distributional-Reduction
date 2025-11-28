@@ -91,63 +91,74 @@ def load_fmnist(n_samples=10000, pca_dim=50):
 
 def load_coil20(pca_dim=50):
     """Load COIL-20."""
-    # Try to download processed 128x128 version
-    url_proc = "https://www.cs.columbia.edu/CAVE/databases/SLAM_coil-20_2000/coil-20/coil-20-proc.tar.gz"
-    tar_path = os.path.join(DATA_DIR, "coil-20-proc.tar.gz")
-    extract_path = os.path.join(DATA_DIR, "coil-20-proc")
+    # Paths to check
+    possible_paths = [
+        os.path.join(DATA_DIR, "coil-20-proc"),
+        os.path.join(os.path.dirname(__file__), "data", "coil-20-proc"),
+        os.path.join(os.getcwd(), "src", "data", "coil-20-proc"),
+        "./src/data/coil-20-proc"
+    ]
     
-    # Check if we have the data already
-    if not os.path.exists(extract_path) and not os.path.exists(tar_path):
-        try:
-            _download_url(url_proc, tar_path)
-        except Exception as e:
-            print(f"Warning: Failed to download 128x128 COIL-20: {e}")
-            print("Attempting fallback to 32x32 version (COIL20.mat)...")
+    extract_path = None
+    for p in possible_paths:
+        if os.path.exists(p) and os.path.isdir(p):
+            # Check if it contains pngs
+            if any(f.endswith('.png') for f in os.listdir(p)):
+                extract_path = p
+                break
     
-    # If tar exists, extract and load
-    if os.path.exists(tar_path):
-        if not os.path.exists(extract_path):
-            print("Extracting COIL-20...")
-            try:
-                with tarfile.open(tar_path, "r:gz") as tar:
-                    tar.extractall(path=DATA_DIR)
-            except Exception as e:
-                print(f"Failed to extract tar: {e}")
-                # Fallthrough to fallback
+    # If not found, try to download (original logic, but simplified for brevity as user has data)
+    if extract_path is None:
+        print("COIL-20 not found in expected locations. Attempting download...")
+        # ... (keep original download logic if needed, but for now let's focus on loading)
+        # Re-using original download logic structure but pointing to DATA_DIR
+        url_proc = "https://www.cs.columbia.edu/CAVE/databases/SLAM_coil-20_2000/coil-20/coil-20-proc.tar.gz"
+        tar_path = os.path.join(DATA_DIR, "coil-20-proc.tar.gz")
+        extract_path = os.path.join(DATA_DIR, "coil-20-proc")
         
-        if os.path.exists(extract_path):
-            # Read images
-            images = []
-            labels = []
-            img_dir = extract_path
-            # Sometimes it extracts to a subdir, check
-            if not os.path.exists(os.path.join(img_dir, "obj1__0.png")):
-                 # Check children
-                 children = os.listdir(img_dir)
-                 if len(children) == 1 and os.path.isdir(os.path.join(img_dir, children[0])):
-                     img_dir = os.path.join(img_dir, children[0])
+        if not os.path.exists(extract_path):
+             _download_url(url_proc, tar_path)
+             with tarfile.open(tar_path, "r:gz") as tar:
+                tar.extractall(path=DATA_DIR)
+    
+    if os.path.exists(extract_path):
+        # Read images
+        images = []
+        labels = []
+        img_dir = extract_path
+        
+        # Check for subdir nesting
+        if not os.path.exists(os.path.join(img_dir, "obj1__0.png")):
+             children = [d for d in os.listdir(img_dir) if os.path.isdir(os.path.join(img_dir, d))]
+             if len(children) == 1:
+                 img_dir = os.path.join(img_dir, children[0])
 
-            valid_files = [f for f in os.listdir(img_dir) if f.endswith('.png')]
-            valid_files.sort()
-            
-            if not valid_files:
-                 print("No png files found in extracted dir.")
-            else:
-                for fname in valid_files:
-                    if not fname.startswith("obj"):
-                        continue
+        valid_files = [f for f in os.listdir(img_dir) if f.endswith('.png')]
+        valid_files.sort()
+        
+        if not valid_files:
+             print("No png files found in extracted dir.")
+        else:
+            print(f"Loading COIL-20 from {img_dir}...")
+            for fname in valid_files:
+                if not fname.startswith("obj"):
+                    continue
+                # fname format: obj{k}__{i}.png where k is label
+                try:
                     label_str = fname.split("__")[0].replace("obj", "")
-                    label = int(label_str) - 1
-                    
-                    img_path = os.path.join(img_dir, fname)
-                    with Image.open(img_path) as img:
-                        img_arr = np.array(img).astype(np.float32) / 255.0
-                        images.append(img_arr.flatten())
-                        labels.append(label)
+                    label = int(label_str) - 1 # 1-indexed to 0-indexed
+                except ValueError:
+                    continue
                 
-                X = np.array(images)
-                Y = np.array(labels)
-                return X, Y, "coil20"
+                img_path = os.path.join(img_dir, fname)
+                with Image.open(img_path) as img:
+                    img_arr = np.array(img).astype(np.float32) / 255.0
+                    images.append(img_arr.flatten())
+                    labels.append(label)
+            
+            X = np.array(images)
+            Y = np.array(labels)
+            return X, Y, "coil20"
 
     # Fallback: COIL20.mat (32x32)
     url_mat = "http://featureselection.asu.edu/files/datasets/COIL20.mat"
