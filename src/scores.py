@@ -3,12 +3,21 @@ Implementation of functions to compute our joint DR/clustering score.
 """
 
 import torch
+import numpy as np
 from src.utils import plan_color
 from torchmetrics.clustering import (
     AdjustedRandScore,
     NormalizedMutualInfoScore,
     AdjustedMutualInfoScore,
     HomogeneityScore,
+)
+from sklearn.metrics import (
+    homogeneity_score,
+    adjusted_mutual_info_score,
+    adjusted_rand_score,
+    normalized_mutual_info_score,
+    silhouette_score,
+    silhouette_samples,
 )
 from src.utils_hyperbolic import minkowski_ip2, lorentz_to_poincare, log_poincare
 import random
@@ -732,6 +741,9 @@ def scores_clustdr(
 
     scores = {}
 
+    if score_list is None:
+        score_list = {}
+
     # torchmetrics scores
     if "hom" in score_list:
         scores["hom"] = HomogeneityScore()(preds, Y[ids]).item()
@@ -788,3 +800,89 @@ def scores_clustdr(
     scores = {key: round(100 * value, 2) for key, value in scores.items()}
 
     return scores
+
+
+def compare_scores_sklearn(
+    T, Z, Y, X, threshold=0, weighted=True, hyperbolic=False
+):
+    score_list = ["hom", "ami", "ari", "nmi", "sil"]
+
+    # Get scores from scores_clustdr
+    our_scores = scores_clustdr(
+        T,
+        Z,
+        Y,
+        X,
+        threshold=threshold,
+        weighted=weighted,
+        hyperbolic=hyperbolic,
+        score_list=score_list,
+    )
+
+    # Prepare data for sklearn (numpy, cpu)
+    ids = torch.where(T.sum(0) > threshold)[0]
+    preds = torch.argmax(T[ids], -1).cpu().numpy()
+    Y_subset = Y[ids].cpu().numpy()
+
+    c, masses = plan_color(T, Y)
+
+    sklearn_scores = {}
+
+    # Homogeneity
+    sklearn_scores["hom"] = homogeneity_score(Y_subset, preds)
+
+    # AMI
+    sklearn_scores["ami"] = adjusted_mutual_info_score(
+        Y_subset, preds, average_method="arithmetic"
+    )
+
+    # ARI
+    sklearn_scores["ari"] = adjusted_rand_score(Y_subset, preds)
+
+    # NMI
+    sklearn_scores["nmi"] = normalized_mutual_info_score(
+        Y_subset, preds, average_method="arithmetic"
+    )
+
+    # Silhouette
+    if weighted:
+        pos_masses = torch.argwhere(masses > 0.0)[:, 0]
+        sub_Z = Z[pos_masses].detach().cpu().numpy()
+        # c is the label for each prototype
+        sub_c = c[pos_masses].detach().cpu().numpy()
+        sub_masses_np = masses[pos_masses].detach().cpu().numpy()
+
+        try:
+            # Sklearn silhouette_score does not support sample_weight for averaging in this version
+            # We must compute samples and average manually
+            samples = silhouette_samples(sub_Z, sub_c)
+            sklearn_scores["sil"] = np.average(samples, weights=sub_masses_np)
+        except Exception as e:
+            print(f"Sklearn silhouette failed: {e}")
+            sklearn_scores["sil"] = -1.0
+    else:
+        sub_Z = Z[ids].detach().cpu().numpy()
+        sub_c = c[ids].detach().cpu().numpy()
+        try:
+            sklearn_scores["sil"] = silhouette_score(sub_Z, sub_c)
+        except Exception as e:
+            print(f"Sklearn silhouette failed: {e}")
+            sklearn_scores["sil"] = -1.0
+
+    # Round and format
+    sklearn_scores = {
+        key: round(100 * value, 2) for key, value in sklearn_scores.items()
+    }
+
+    print("\nComparison of Scores:")
+    print(
+        f"{'Metric':<10} | {'Our Score':<10} | {'Sklearn Score':<10} | {'Diff':<10}"
+    )
+    print("-" * 46)
+    for key in score_list:
+        our = our_scores.get(key, 0)
+        sk = sklearn_scores.get(key, 0)
+        diff = our - sk
+        print(f"{key:<10} | {our:<10} | {sk:<10} | {diff:<10.2f}")
+
+    return our_scores, sklearn_scores

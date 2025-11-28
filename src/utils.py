@@ -409,7 +409,7 @@ class KMeans(object):
             for it in tqdm(
                 range(self.max_iter), desc="fit kmeans (seed = %s)" % run_it
             ):
-                distances = self.pairwise_dists(centroids, X)
+                distances = self.pairwise_dists(X, centroids)
                 
                 
                 labels = distances.argmin(dim=1)
@@ -440,7 +440,7 @@ class KMeans(object):
                 if diff_distances < self.tol:
                     break
 
-            distances = self.pairwise_dists(centroids, X)
+            distances = self.pairwise_dists(X, centroids)
             
             labels = distances.argmin(dim=1)
 
@@ -456,6 +456,8 @@ class KMeans(object):
 
             if self.verbose:
                 print("Iteration: {} - Best Inertia: {}".format(run_it, self.inertia))
+        
+        return self
 
     def fit_predict(self, X):
         self.fit(X)
@@ -470,6 +472,6 @@ class KMeans(object):
         return distances.argmin(dim=1)
 
     def transform(self, X):
-        distances = self.pairwise_dists(self.cluster_centers_, X)
+        distances = self.pairwise_dists(X, self.cluster_centers_)
 
         return distances
