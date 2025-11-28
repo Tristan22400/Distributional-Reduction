@@ -42,8 +42,8 @@ LOSS_FUNCTION = "kl_loss"
 OUTPUT_DIM = 2
 
 # 5. Dataset Loading and Preparation
-# Available datasets: 'coil20', 'mnist', 'fmnist', 'pbmc', 'zeisel', 'snareseq_gene', 'snareseq_chrom'
-DATASETS = [ 'pbmc', 'mnist']
+# Available datasets: 'coil20', 'mnist', 'fmnist', 'pbmc', 'zeisel'
+DATASETS = [  'coil20', 'mnist', 'fmnist', 'pbmc', 'zeisel']
 
 # ==========================================
 # MAIN SCRIPT
@@ -77,7 +77,7 @@ if device == 'cuda':
     print(f"GPU: {torch.cuda.get_device_name(0)}")
 
 
-subset_size = 100  # Set to None to use the full dataset
+subset_size = None # Set to None to use the full dataset
 
 # Store results for all datasets
 # Structure: dataset_name -> history (method -> metric -> list of lists)
@@ -88,7 +88,7 @@ all_results = {}
 # or we can handle different counts per dataset if we really wanted to,
 # but for a grid plot, sharing the x-axis is better.
 # Let's define a standard list, and filter if needed (though usually fixed).
-standard_prototype_counts =[5, 10] # [5, 10, 20, 30, 50, 100]
+standard_prototype_counts = [5, 10, 20, 30, 50, 100]
 
 # We will use the same prototype counts for all datasets for consistency in plotting
 # If subset_size is small, we filter.
@@ -101,7 +101,7 @@ print(f"Iterating over prototype counts: {prototype_counts}")
 
 methods = ['DistR', 'DR_then_Clust', 'Clust_then_DR']
 metrics = ["hom", "ami", "ari", "nmi", "sil"]
-n_seeds = 3 # Number of seeds per experiment
+n_seeds = 1 # Number of seeds per experiment
 
 for target_dataset in datasets_to_load:
     if target_dataset in loaded_data:
