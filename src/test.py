@@ -48,6 +48,9 @@ DATASETS = ['mnist']
 # 6. Subset Size
 subset_size = None # Set to None to use the full dataset
 
+# 7. Number of seeds per experiment
+n_seeds = 1
+
 # ==========================================
 # MAIN SCRIPT
 # ==========================================
