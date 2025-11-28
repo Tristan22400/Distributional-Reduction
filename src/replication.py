@@ -197,3 +197,108 @@ def plot_prototype_evolution(results_dict, prototype_counts, methods=['DistR', '
     plt.savefig(filename)
     print(f"Plot saved to {filename}")
     # plt.show() # Commented out for headless execution
+
+def plot_tradeoff_analysis(results_dict, methods=['DistR', 'DR_then_Clust', 'Clust_then_DR'], filename="tradeoff_analysis.png"):
+    """
+    Replicates Figure 3: Trade-off analysis between NMI and Homogeneity.
+    
+    Args:
+        results_dict: Dictionary where keys are dataset names and values are history dictionaries.
+                      history structure: method -> metric -> list of lists (scores across seeds for each proto count)
+        methods: List of method names to plot.
+        filename: Output filename for the plot.
+    """
+    # Setup figure
+    fig, axes = plt.subplots(1, 3, figsize=(18, 6), sharex=True, sharey=True)
+    
+    # Define colors/markers for datasets
+    datasets = list(results_dict.keys())
+    # Use a colormap that supports enough distinct colors
+    cmap = plt.get_cmap("tab10")
+    colors = {d: cmap(i % 10) for i, d in enumerate(datasets)}
+    markers = ['o', 's', '^', 'D', 'v', '<', '>', 'p', '*', 'h']
+    dataset_markers = {d: markers[i % len(markers)] for i, d in enumerate(datasets)}
+
+    # 1. Calculate Normalization Constants per Dataset
+    # We need min/max for NMI and Hom for each dataset across ALL methods
+    norm_stats = {} # dataset -> {nmi_min, nmi_max, hom_min, hom_max}
+    
+    for dataset in datasets:
+        all_nmi = []
+        all_hom = []
+        
+        history = results_dict[dataset]
+        for method in methods:
+            if method in history:
+                # history[method]['nmi'] is list of lists (protos -> seeds)
+                # Flatten it
+                nmis = np.array(history[method].get('nmi', [])).flatten()
+                homs = np.array(history[method].get('hom', [])).flatten()
+                
+                all_nmi.extend(nmis)
+                all_hom.extend(homs)
+        
+        if not all_nmi or not all_hom:
+            print(f"Warning: No NMI/Hom data for dataset {dataset}")
+            continue
+            
+        norm_stats[dataset] = {
+            'nmi_min': np.min(all_nmi),
+            'nmi_max': np.max(all_nmi),
+            'hom_min': np.min(all_hom),
+            'hom_max': np.max(all_hom)
+        }
+
+    # 2. Plotting
+    for i, method in enumerate(methods):
+        ax = axes[i]
+        ax.set_title(method, fontsize=14, fontweight='bold')
+        ax.set_xlim(-0.05, 1.05)
+        ax.set_ylim(-0.05, 1.05)
+        ax.set_xlabel("Normalized k-means NMI")
+        if i == 0:
+            ax.set_ylabel("Normalized Homogeneity")
+        
+        for dataset in datasets:
+            if dataset not in norm_stats:
+                continue
+                
+            stats = norm_stats[dataset]
+            history = results_dict[dataset]
+            
+            if method in history:
+                raw_nmi = np.array(history[method].get('nmi', [])).flatten()
+                raw_hom = np.array(history[method].get('hom', [])).flatten()
+                
+                if len(raw_nmi) == 0:
+                    continue
+                
+                # Normalize
+                # Formula: (x - min) / (max - min)
+                nmi_denom = stats['nmi_max'] - stats['nmi_min']
+                hom_denom = stats['hom_max'] - stats['hom_min']
+                
+                # Handle edge case where max == min (avoid div by zero)
+                if nmi_denom > 1e-9:
+                    norm_nmi = (raw_nmi - stats['nmi_min']) / nmi_denom
+                else:
+                    norm_nmi = np.zeros_like(raw_nmi) # If no variance, map to 0 (or could be 0.5)
+
+                if hom_denom > 1e-9:
+                    norm_hom = (raw_hom - stats['hom_min']) / hom_denom
+                else:
+                    norm_hom = np.zeros_like(raw_hom)
+                
+                ax.scatter(norm_nmi, norm_hom, 
+                           label=dataset if i == 0 else "", 
+                           color=colors[dataset],
+                           marker=dataset_markers[dataset],
+                           alpha=0.7, s=30)
+                           
+    # Add legend to the first plot
+    if datasets:
+        axes[0].legend(loc='lower right', fontsize='small', title="Datasets")
+    
+    plt.tight_layout()
+    plt.savefig(filename)
+    print(f"Trade-off plot saved to {filename}")
