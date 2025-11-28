@@ -736,9 +736,12 @@ def scores_clustdr(
     c, masses = plan_color(T, Y)
 
     # retain only clusters with more than threshold points
-    ids = torch.where(T.sum(0) > threshold)[0]
-    preds = torch.argmax(T[ids], -1)
-
+    # ids = torch.where(T.sum(0) > threshold)[0]
+    # preds = torch.argmax(T[ids], -1)
+    
+    # FIX: Use all samples for clustering metrics
+    preds = torch.argmax(T, dim=1)
+    
     scores = {}
 
     if score_list is None:
@@ -746,18 +749,18 @@ def scores_clustdr(
 
     # torchmetrics scores
     if "hom" in score_list:
-        scores["hom"] = HomogeneityScore()(preds, Y[ids]).item()
+        scores["hom"] = HomogeneityScore()(preds, Y).item()
 
     if "ami" in score_list:
         scores["ami"] = AdjustedMutualInfoScore(average_method="arithmetic")(
-            preds, Y[ids]
+            preds, Y
         ).item()
 
     if "ari" in score_list:
-        scores["ari"] = AdjustedRandScore()(preds, Y[ids]).item()
+        scores["ari"] = AdjustedRandScore()(preds, Y).item()
 
     if "nmi" in score_list:
-        scores["nmi"] = NormalizedMutualInfoScore("arithmetic")(preds, Y[ids]).item()
+        scores["nmi"] = NormalizedMutualInfoScore("arithmetic")(preds, Y).item()
 
     # kNN recall
     if "knn_10" in score_list:
@@ -820,9 +823,14 @@ def compare_scores_sklearn(
     )
 
     # Prepare data for sklearn (numpy, cpu)
-    ids = torch.where(T.sum(0) > threshold)[0]
-    preds = torch.argmax(T[ids], -1).cpu().numpy()
-    Y_subset = Y[ids].cpu().numpy()
+    # Prepare data for sklearn (numpy, cpu)
+    # ids = torch.where(T.sum(0) > threshold)[0]
+    # preds = torch.argmax(T[ids], -1).cpu().numpy()
+    # Y_subset = Y[ids].cpu().numpy()
+    
+    # FIX: Use all samples
+    preds = torch.argmax(T, dim=1).cpu().numpy()
+    Y_subset = Y.cpu().numpy()
 
     c, masses = plan_color(T, Y)
 
