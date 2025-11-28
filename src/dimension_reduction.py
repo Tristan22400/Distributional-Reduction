@@ -219,7 +219,7 @@ class AffinityMatcher:
                 if self.loss_fun == "kl_loss":
                     loss += torch.logsumexp(log_Q, dim=(0, 1))
             
-            if self.loss_fun == 'binary_cross_entropy':
+            elif self.loss_fun == 'binary_cross_entropy':
                 Q = self.affinity_embedding.compute_affinity(embedding)
                 loss = torch.nn.functional.binary_cross_entropy(Q, PX_, reduction="sum")
                 

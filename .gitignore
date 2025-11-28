@@ -30,5 +30,6 @@ scGeneFit-python/
 *.maf
 *.mtc*
 *.venv
-*.txt
 *PKG-INFO
+*ubyte
+*h5ad

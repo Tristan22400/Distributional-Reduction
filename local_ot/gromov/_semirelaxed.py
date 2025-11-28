@@ -156,7 +156,7 @@ def semirelaxed_gromov_wasserstein(
             else:
                 return 0.5 * (gwggrad(marginal_product_1, hC1, hC2, G, nx) + gwggrad(marginal_product_2, hC1t, hC2t, G, nx))
 
-    def line_search(cost, G, deltaG, Mi, cost_G, **kwargs):
+    def line_search(cost, G, deltaG, Mi, cost_G, *args, **kwargs):
         return solve_semirelaxed_gromov_linesearch(G, deltaG, cost_G, hC1, hC2, ones_p, M=0., reg=1., fC2t=fC2t, nx=nx, **kwargs)
 
     if log:

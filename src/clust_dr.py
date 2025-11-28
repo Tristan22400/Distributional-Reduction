@@ -498,7 +498,7 @@ class AffinityBasedDataSummarizer(DataSummarizer):
             )
 
         if isinstance(self.affinity_data, (BaseAffinity, SparseLogAffinity)):
-            self.PX = self.affinity_data.compute_affinity(self.X)
+            self.PX = self.affinity_data.compute_affinity(self.X).to(dtype=self.dtype)
         elif self.affinity_data == "precomputed":
             if self.X.shape[0] != self.X.shape[1]:
                 raise WrongInputFitError(
@@ -697,9 +697,8 @@ class DistR(AffinityBasedDataSummarizer):
         elif self.init_T == "kmeans":
             kmeans = KMeans(
                 n_clusters=self.output_sam, random_state=self.seed, n_init=10
-            ).fit(
-                self.X.cpu()
-            )  # Apply kmeans on data
+            )
+            kmeans.fit(self.X.cpu())  # Apply kmeans on data
             self.T = torch.eye(self.output_sam)[kmeans.labels_].to(
                 dtype=self.dtype, device=self.device
             )
