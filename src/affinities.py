@@ -32,6 +32,12 @@ class BaseAffinity:
     def compute_affinity(self, X):
         pass
 
+    def parameters(self):
+        """
+        Returns a list of learnable parameters (torch.Tensor) for the affinity.
+        """
+        return []
+
     def compute_log_affinity(self, X):
         return torch.log(self.compute_affinity(X) + 1e-10)
 
@@ -190,6 +196,46 @@ class NormalizedGaussianAndStudentAffinity(LogAffinity):
         else:
             log_P = -C / (2 * self.sigma)
         return log_P - torch.logsumexp(log_P, dim=axis)
+
+
+class LearnableNormalizedGaussianAndStudentAffinity(LogAffinity):
+    """
+    This class computes the normalized affinity associated to a t-Student kernel with a learnable degree of freedom (alpha).
+    The affinity matrix is normalized by given axis.
+
+    Parameters
+    ----------
+    alpha_init : float, optional
+        Initial value for the degree of freedom (alpha), by default 1.0.
+    """
+
+    def __init__(self, alpha_init=1.0, zero_diag=False):
+        self.alpha = torch.tensor(alpha_init, dtype=torch.float32, requires_grad=True)
+        self.zero_diag = zero_diag
+        super(LearnableNormalizedGaussianAndStudentAffinity, self).__init__()
+
+    def compute_log_affinity(self, X, axis=(0, 1)):
+        """
+        Computes the pairwise affinity matrix in log space and normalize it by given axis.
+        """
+        # Ensure alpha is on the correct device
+        alpha = self.alpha
+        if alpha.device != X.device:
+            alpha = alpha.to(X.device)
+
+        C = pairwise_distances(X, X, zero_diag=self.zero_diag)
+        
+        # Student-t kernel: (1 + d^2 / alpha)^(-(alpha+1)/2)
+        # Log: -((alpha+1)/2) * log(1 + d^2 / alpha)
+        
+        nu = torch.nn.functional.softplus(alpha) # Ensure positive nu
+        
+        log_P = -((nu + 1) / 2) * torch.log(1 + C / nu)
+        
+        return log_P - torch.logsumexp(log_P, dim=axis)
+
+    def parameters(self):
+        return [self.alpha]
 
 
 class EntropicAffinity(LogAffinity):
