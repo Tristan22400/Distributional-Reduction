@@ -14,7 +14,6 @@ def get_majority_vote_labels(T, Y):
     # T: (N_samples, n_prototypes) [GPU]
     # Y: (N_samples,) [CPU/Numpy]
     
-    n_prototypes = T.shape[1]
     # Convert Y to GPU tensor once
     Y_tensor = torch.as_tensor(Y, device=T.device, dtype=torch.long)
     n_classes = Y_tensor.max().item() + 1
