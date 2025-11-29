@@ -230,7 +230,13 @@ class DataSummarizer:
             ).to(dtype=self.dtype, device=self.device)
         else:
             raise WrongParameter('init must be in ["normal", "WrappedNormal"]')
-        self.optimizer = OPTIMIZERS[self.optimizer]([self.Z], lr=self.lr)
+        
+        # Collect parameters to optimize
+        params = [self.Z]
+        if hasattr(self, 'affinity_embedding') and hasattr(self.affinity_embedding, 'parameters'):
+            params.extend(self.affinity_embedding.parameters())
+            
+        self.optimizer = OPTIMIZERS[self.optimizer](params, lr=self.lr)
 
     @abstractmethod
     def _embed_loss(self):
