@@ -257,6 +257,8 @@ if RUN_ALPHA_ANALYSIS:
             init_T="kmeans",
             tol=1e-9, # Lower tolerance to prevent early stopping
             max_iter_outer=100, # Increase outer loop limit
+            lr_affinity=1,
+            warmup_iter=50,
             seed=0
         )
         
