@@ -208,6 +208,7 @@ class LoggedDistR(DistR):
 # 1. Train with Learnable Alpha
 print("\n--- Training with LEARNABLE Alpha ---")
 learnable_affinity = LearnableNormalizedGaussianAndStudentAffinity(alpha_init=1.0)
+learnable_affinity.to(device)
 
 model_distr = LoggedDistR(
     affinity_data=AFFINITY_DATA,
@@ -309,6 +310,7 @@ for alpha in ALPHA_RANGE:
     print(f"  Testing Alpha = {alpha}...")
     
     fixed_affinity = LearnableNormalizedGaussianAndStudentAffinity(alpha_init=alpha)
+    fixed_affinity.to(device)
     fixed_affinity.alpha.requires_grad = False # Fix alpha
     
     # Manually run DistR to get loss
