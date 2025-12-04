@@ -1,5 +1,6 @@
 # Affinity matrices
 import torch
+import torch.nn as nn
 import math
 from tqdm import tqdm
 from abc import abstractmethod
@@ -198,7 +199,7 @@ class NormalizedGaussianAndStudentAffinity(LogAffinity):
         return log_P - torch.logsumexp(log_P, dim=axis)
 
 
-class LearnableNormalizedGaussianAndStudentAffinity(LogAffinity):
+class LearnableNormalizedGaussianAndStudentAffinity(LogAffinity, nn.Module):
     """
     This class computes the normalized affinity associated to a t-Student kernel with a learnable degree of freedom (alpha).
     The affinity matrix is normalized by given axis.
@@ -210,15 +211,18 @@ class LearnableNormalizedGaussianAndStudentAffinity(LogAffinity):
     """
 
     def __init__(self, alpha_init=1.0, zero_diag=False):
-        self.alpha = torch.tensor(alpha_init, dtype=torch.float32, requires_grad=True)
+        LogAffinity.__init__(self)
+        nn.Module.__init__(self)
+        self.alpha = nn.Parameter(torch.tensor(alpha_init, dtype=torch.float32))
         self.zero_diag = zero_diag
-        super(LearnableNormalizedGaussianAndStudentAffinity, self).__init__()
 
     def compute_log_affinity(self, X, axis=(0, 1)):
         """
         Computes the pairwise affinity matrix in log space and normalize it by given axis.
         """
         # Ensure alpha is on the correct device
+        # If this module is moved to device, self.alpha will be on device.
+        # If X is on a different device, we might need to move alpha (but ideally they should match)
         alpha = self.alpha
         if alpha.device != X.device:
             alpha = alpha.to(X.device)
@@ -234,8 +238,8 @@ class LearnableNormalizedGaussianAndStudentAffinity(LogAffinity):
         
         return log_P - torch.logsumexp(log_P, dim=axis)
 
-    def parameters(self):
-        return [self.alpha]
+    def parameters(self, recurse=True):
+        return nn.Module.parameters(self, recurse=recurse)
 
 
 class EntropicAffinity(LogAffinity):

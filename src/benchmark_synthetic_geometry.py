@@ -178,6 +178,10 @@ def run_experiment(n_samples=1000, n_iter=500, perplexity=30):
     
     alpha_trajectories = {}
     
+    # Auto-detect device
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    print(f"Using device: {device}")
+
     for i, (X, labels, name) in enumerate(datasets):
         print(f"Processing {name}...")
         
@@ -190,6 +194,7 @@ def run_experiment(n_samples=1000, n_iter=500, perplexity=30):
         
         # Embedding Affinity: Learnable Student-t
         affinity_embedding = LearnableNormalizedGaussianAndStudentAffinity(alpha_init=1.0)
+        affinity_embedding.to(device)
         
         # Initialize T to identity to enforce point-to-point correspondence
         # Row sums must be 1 (since h0 is ones)
@@ -217,7 +222,8 @@ def run_experiment(n_samples=1000, n_iter=500, perplexity=30):
             verbose=True,
             tol=0, # Disable delta check
             early_stopping=False, # Disable early stopping to see full trajectory
-            dtype=torch.float32 # Match input dtype
+            dtype=torch.float32, # Match input dtype
+            device=device
         )
         
         # Fit
