@@ -207,14 +207,25 @@ def plot_tradeoff_analysis(results_dict, methods=['DistR', 'DR_then_Clust', 'Clu
         methods: List of method names to plot.
         filename: Output filename for the plot.
     """
-    # Setup figure
-    fig, axes = plt.subplots(1, 3, figsize=(18, 6), sharex=True, sharey=True)
+    import matplotlib.patches as patches
+
+    # Setup figure - Single plot
+    fig, ax = plt.subplots(figsize=(8, 8))
     
-    # Define colors/markers for datasets
+    # Define colors for methods
+    method_colors = {
+        'DistR': 'blue',
+        'DR_then_Clust': 'green',
+        'Clust_then_DR': 'orange'
+    }
+    # Fallback for other methods
+    cmap_methods = plt.get_cmap("Set1")
+    for i, m in enumerate(methods):
+        if m not in method_colors:
+            method_colors[m] = cmap_methods(i)
+
+    # Define markers for datasets
     datasets = list(results_dict.keys())
-    # Use a colormap that supports enough distinct colors
-    cmap = plt.get_cmap("tab10")
-    colors = {d: cmap(i % 10) for i, d in enumerate(datasets)}
     markers = ['o', 's', '^', 'D', 'v', '<', '>', 'p', '*', 'h']
     dataset_markers = {d: markers[i % len(markers)] for i, d in enumerate(datasets)}
 
@@ -248,23 +259,19 @@ def plot_tradeoff_analysis(results_dict, methods=['DistR', 'DR_then_Clust', 'Clu
             'hom_max': np.max(all_hom)
         }
 
-    # 2. Plotting
-    for i, method in enumerate(methods):
-        ax = axes[i]
-        ax.set_title(method, fontsize=14, fontweight='bold')
-        ax.set_xlim(-0.05, 1.05)
-        ax.set_ylim(-0.05, 1.05)
-        ax.set_xlabel("Normalized k-means NMI")
-        if i == 0:
-            ax.set_ylabel("Normalized Homogeneity")
-        
-        for dataset in datasets:
-            if dataset not in norm_stats:
-                continue
-                
-            stats = norm_stats[dataset]
-            history = results_dict[dataset]
+    # Data structure to hold aggregated normalized scores for quantile calculation
+    # method -> {'nmi': [], 'hom': []}
+    aggregated_scores = {m: {'nmi': [], 'hom': []} for m in methods}
+
+    # 2. Plotting Points
+    for dataset in datasets:
+        if dataset not in norm_stats:
+            continue
             
+        stats = norm_stats[dataset]
+        history = results_dict[dataset]
+        
+        for method in methods:
             if method in history:
                 raw_nmi = np.array(history[method].get('nmi', [])).flatten()
                 raw_hom = np.array(history[method].get('hom', [])).flatten()
@@ -273,31 +280,63 @@ def plot_tradeoff_analysis(results_dict, methods=['DistR', 'DR_then_Clust', 'Clu
                     continue
                 
                 # Normalize
-                # Formula: (x - min) / (max - min)
                 nmi_denom = stats['nmi_max'] - stats['nmi_min']
                 hom_denom = stats['hom_max'] - stats['hom_min']
                 
-                # Handle edge case where max == min (avoid div by zero)
                 if nmi_denom > 1e-9:
                     norm_nmi = (raw_nmi - stats['nmi_min']) / nmi_denom
                 else:
-                    norm_nmi = np.zeros_like(raw_nmi) # If no variance, map to 0 (or could be 0.5)
+                    norm_nmi = np.zeros_like(raw_nmi)
 
                 if hom_denom > 1e-9:
                     norm_hom = (raw_hom - stats['hom_min']) / hom_denom
                 else:
                     norm_hom = np.zeros_like(raw_hom)
                 
+                # Store for quantiles
+                aggregated_scores[method]['nmi'].extend(norm_nmi)
+                aggregated_scores[method]['hom'].extend(norm_hom)
+
+                # Plot
                 ax.scatter(norm_nmi, norm_hom, 
-                           label=dataset if i == 0 else "", 
-                           color=colors[dataset],
+                           c=method_colors[method],
                            marker=dataset_markers[dataset],
-                           alpha=0.7, s=30)
-                           
-    # Add legend to the first plot
-    if datasets:
-        axes[0].legend(loc='lower right', fontsize='small', title="Datasets")
+                           alpha=0.6, s=40)
+
+    # 3. Quantile Rectangles
+    for method in methods:
+        nmis = np.array(aggregated_scores[method]['nmi'])
+        homs = np.array(aggregated_scores[method]['hom'])
+        
+        if len(nmis) > 0:
+            nmi_20, nmi_80 = np.percentile(nmis, [20, 80])
+            hom_20, hom_80 = np.percentile(homs, [20, 80])
+            
+            # Draw Rectangle
+            # (x, y), width, height
+            rect = patches.Rectangle((nmi_20, hom_20), nmi_80 - nmi_20, hom_80 - hom_20,
+                                     linewidth=1, edgecolor='none', facecolor=method_colors[method], alpha=0.2)
+            ax.add_patch(rect)
+
+    # 4. Final Touches
+    ax.set_xlim(-0.05, 1.05)
+    ax.set_ylim(-0.05, 1.05)
+    ax.set_xlabel("Normalized k-means NMI", fontsize=12)
+    ax.set_ylabel("Normalized Homogeneity", fontsize=12)
+    ax.set_title("Trade-off Analysis", fontsize=14, fontweight='bold')
     
+    # Custom Legends
+    # Method Legend
+    method_handles = [patches.Patch(color=method_colors[m], label=m) for m in methods]
+    legend1 = ax.legend(handles=method_handles, title="Methods", loc='upper left', bbox_to_anchor=(1.05, 1))
+    ax.add_artist(legend1)
+    
+    # Dataset Legend
+    dataset_handles = [plt.Line2D([0], [0], marker=dataset_markers[d], color='w', label=d, 
+                                  markerfacecolor='k', markersize=8) for d in datasets]
+    ax.legend(handles=dataset_handles, title="Datasets", loc='upper left', bbox_to_anchor=(1.05, 0.6))
+
     plt.tight_layout()
-    plt.savefig(filename)
+    plt.savefig(filename, bbox_inches='tight')
     print(f"Trade-off plot saved to {filename}")
+
