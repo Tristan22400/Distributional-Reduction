@@ -44,16 +44,16 @@ OUTPUT_DIM = 2
 
 # 5. Dataset Loading and Preparation
 # Available datasets: 'coil20', 'mnist', 'fmnist', 'pbmc', 'zeisel'
-DATASETS = ['coil20']
+DATASETS = ['coil20', 'fmnist', 'pbmc', 'zeisel', 'mnist']
 
 # 6. Subset Size
-subset_size = None # Set to None to use the full dataset
+subset_size = 100 # Set to None to use the full dataset
 
 # 7. Number of experiment
 n_experiments = 1
 
 # 8. Prototype counts
-standard_prototype_counts = [5]
+standard_prototype_counts = [5, 10, 20, 50]
 
 # 9. Methods
 methods = ['DistR', 'DR_then_Clust', 'Clust_then_DR']
