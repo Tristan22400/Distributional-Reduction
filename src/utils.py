@@ -345,7 +345,7 @@ class KMeans(object):
         max_iter=300,
         tol=1e-4,
         random_state=0,
-        verbose=True,
+        verbose=False,
     ):
         self.n_clusters = n_clusters
         self.n_init = n_init

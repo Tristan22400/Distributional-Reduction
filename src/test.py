@@ -6,7 +6,8 @@ from src.dataset_pipeline import load_dataset
 import numpy as np
 import torch
 from src.replication import run_experiment, plot_prototype_evolution, plot_tradeoff_analysis
-from src.affinities import SymmetricEntropicAffinity, NormalizedGaussianAndStudentAffinity
+from src.affinities import SymmetricEntropicAffinity, NormalizedGaussianAndStudentAffinity, LearnableNormalizedGaussianAndStudentAffinity
+import matplotlib.pyplot as plt
 
 # ==========================================
 # CONFIGURATION PARAMETERS
@@ -43,20 +44,22 @@ OUTPUT_DIM = 2
 
 # 5. Dataset Loading and Preparation
 # Available datasets: 'coil20', 'mnist', 'fmnist', 'pbmc', 'zeisel'
-DATASETS = ['coil20']
+DATASETS = ['coil20', 'fmnist', 'pbmc', 'zeisel', 'mnist']
 
 # 6. Subset Size
-subset_size = None # Set to None to use the full dataset
+subset_size = 100 # Set to None to use the full dataset
 
 # 7. Number of experiment
 n_experiments = 1
 
 # 8. Prototype counts
-standard_prototype_counts = [5, 10, 20, 30, 50, 100]
+standard_prototype_counts = [5, 10, 20, 50]
 
 # 9. Methods
 methods = ['DistR', 'DR_then_Clust', 'Clust_then_DR']
 metrics = ["hom", "ami", "ari", "nmi", "sil"]
+
+
 
 # ==========================================
 # MAIN SCRIPT
@@ -101,6 +104,9 @@ else:
     prototype_counts = standard_prototype_counts
     
 print(f"Iterating over prototype counts: {prototype_counts}")
+
+
+
 
 
 

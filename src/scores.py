@@ -493,7 +493,7 @@ class Lorentz_KMeans(object):
         p=2.0,
         lr=0.01,
         max_iter_inner=2000,
-        verbose=True,
+        verbose=False,
     ):
         self.n_clusters = n_clusters
         self.n_init = n_init
