@@ -6,8 +6,8 @@ import networkx as nx
 import ot
 import matplotlib.pyplot as plt
 from sklearn.datasets import make_blobs, make_swiss_roll, make_s_curve
-from sklearn.manifold import MDS
-from sklearn.metrics import silhouette_score
+from sklearn.manifold import MDS, trustworthiness
+from sklearn.metrics import silhouette_score, pairwise_distances
 from sklearn.preprocessing import StandardScaler
 import random
 import argparse
@@ -19,7 +19,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 # Import real DistR and affinities
 from src.clust_dr import DistR
-from src.affinities import LearnableNormalizedGaussianAndStudentAffinity, NormalizedGaussianAndStudentAffinity, EntropicAffinity
+from src.affinities import LearnableNormalizedGaussianAndStudentAffinity, NormalizedGaussianAndStudentAffinity, EntropicAffinity, LorentzHyperbolicAffinity
 
 # Set random seeds for reproducibility
 def set_seed(seed=42):
@@ -56,11 +56,7 @@ class SyntheticManifolds:
 
     def generate_tree(self):
         # Generate a balanced binary tree
-        # Depth 9 gives 2^10 - 1 = 1023 nodes, close to 1000
         G = nx.balanced_tree(r=2, h=9)
-        # Subsample to exactly n_samples if needed, but 1023 is close enough. 
-        # Let's just take the first n_samples nodes if > n_samples, or regenerate.
-        # Actually, let's just use the graph as is and slice.
         nodes = list(G.nodes())[:self.n_samples]
         G = G.subgraph(nodes)
         
@@ -87,35 +83,12 @@ class DistRWithLogging(DistR):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.alpha_logs = []
-        
-        # FIX: Re-initialize optimizer because affinity_embedding parameters 
-        # were missed due to initialization order in parent classes.
-        # DataSummarizer.__init__ calls _init_embedding BEFORE AffinityBasedDataSummarizer sets affinity_embedding.
-        
-        # Re-collect parameters
-        params = [{'params': [self.Z], 'lr': self.lr}]
-        if hasattr(self, 'affinity_embedding') and hasattr(self.affinity_embedding, 'parameters'):
-            params.append({'params': self.affinity_embedding.parameters(), 'lr': self.lr_affinity})
-            
-        # Re-create optimizer
-        # We need to access the optimizer class. self.optimizer is an instance now.
-        # But we stored the optimizer name in self.optimizer_name? No.
-        # But we passed 'optimizer' string to __init__.
-        # We can use OPTIMIZERS dict if we import it, or just use optim.Adam since we hardcoded it in run_experiment.
-        # Or better, check type of self.optimizer?
-        # Let's just use optim.Adam as we know we use it.
-        self.optimizer = optim.Adam(params)
 
     def _update_embedding(self, max_iter=None):
-        """
-        Optimize the embeddings coordinates using a gradient-based optimization method.
-        """
         if max_iter is None:
             max_iter = self.max_iter
             
         self.Z.requires_grad = True
-        # Ensure alpha is optimized if it's in parameters
-        # The parent class handles optimizer creation in _init_embedding
         
         from tqdm import tqdm
         pbar = tqdm(range(max_iter), disable=not self.verbose)
@@ -133,22 +106,6 @@ class DistRWithLogging(DistR):
             if hasattr(self.affinity_embedding, 'alpha'):
                 alpha_val = torch.nn.functional.softplus(self.affinity_embedding.alpha).item()
                 self.alpha_logs.append(alpha_val)
-                
-                # Debug: Check gradient
-                if self.affinity_embedding.alpha.grad is not None:
-                    # print(f"Alpha grad: {self.affinity_embedding.alpha.grad.item()}")
-                    pass
-                else:
-                    if i == 0:
-                        print("Alpha grad is None!")
-            
-            if i == 0:
-                # Debug: Check optimizer params
-                print(f"Optimizer param groups: {len(self.optimizer.param_groups)}")
-                for idx, group in enumerate(self.optimizer.param_groups):
-                    print(f"Group {idx} lr: {group['lr']}, params: {len(group['params'])}")
-                    for p in group['params']:
-                        print(f"  Param shape: {p.shape}, requires_grad: {p.requires_grad}")
             
             if i > 1:
                 delta = abs(self.losses[-1] - self.losses[-2]) / abs(self.losses[-2])
@@ -162,6 +119,104 @@ class DistRWithLogging(DistR):
                         f"delta : {float(delta): .3e} "
                     )
 
+def lorentz_to_poincare(x):
+    """
+    Convert Lorentz model coordinates (n, d+1) to Poincaré ball coordinates (n, d).
+    x = (x0, x1, ..., xd)
+    y_i = x_i / (1 + x0)
+    """
+    return x[:, 1:] / (1 + x[:, 0:1])
+
+def hyperbolic_distance(Z):
+    """
+    Compute pairwise hyperbolic distances for Lorentz points Z.
+    d(x, y) = arccosh(-<x, y>_L)
+    """
+    # <x, y>_L = -x0y0 + x1y1 + ...
+    # Z: (N, D+1)
+    # We can use src.utils_hyperbolic.minkowski_ip2 if available, or implement here.
+    # Let's implement simple version.
+    
+    # Z is (N, dim)
+    # Inner product
+    # x0*y0
+    xy0 = Z[:, 0:1] @ Z[:, 0:1].T
+    # x_rest * y_rest
+    xy_rest = Z[:, 1:] @ Z[:, 1:].T
+    inner = -xy0 + xy_rest
+    
+    # Clamp for numerical stability
+    inner = torch.clamp(inner, max=-1.0 - 1e-15)
+    dist = torch.arccosh(-inner)
+    return dist
+
+def calculate_trustworthiness(X, Z, k=5, is_hyperbolic=False):
+    """
+    Calculate Continuity as Trustworthiness(Z, X).
+    If is_hyperbolic is True, Z is in Lorentz model.
+    """
+    if is_hyperbolic:
+        # Compute distance matrices
+        D_X = pairwise_distances(X)
+        Z_torch = torch.tensor(Z, dtype=torch.float64)
+        D_Z = hyperbolic_distance(Z_torch).numpy()
+        # Fill diagonal with 0
+        np.fill_diagonal(D_Z, 0)
+        
+        return trustworthiness(D_Z, D_X, n_neighbors=k, metric='precomputed')
+    else:
+        return trustworthiness(Z, X, n_neighbors=k)
+
+def calculate_continuity(X, Z, k=5, is_hyperbolic=False):
+    """
+    Calculate Continuity as Trustworthiness(Z, X).
+    """
+    if is_hyperbolic:
+        D_X = pairwise_distances(X)
+        Z_torch = torch.tensor(Z, dtype=torch.float64)
+        D_Z = hyperbolic_distance(Z_torch).numpy()
+        np.fill_diagonal(D_Z, 0)
+        return trustworthiness(D_X, D_Z, n_neighbors=k, metric='precomputed')
+    else:
+        return trustworthiness(X, Z, n_neighbors=k)
+
+def plot_shepard_diagram(X, Z, ax, title="Shepard Diagram", is_hyperbolic=False):
+    """
+    Plot Shepard Diagram: Input Distances vs Embedding Distances.
+    """
+    # Subsample if too large
+    n = X.shape[0]
+    if n > 500:
+        indices = np.random.choice(n, 500, replace=False)
+        X_sub = X[indices]
+        Z_sub = Z[indices]
+    else:
+        X_sub = X
+        Z_sub = Z
+        
+    D_X = pairwise_distances(X_sub)
+    
+    if is_hyperbolic:
+        Z_torch = torch.tensor(Z_sub, dtype=torch.float64)
+        D_Z = hyperbolic_distance(Z_torch).numpy()
+    else:
+        D_Z = pairwise_distances(Z_sub)
+    
+    # Flatten upper triangle
+    mask = np.triu(np.ones_like(D_X, dtype=bool), k=1)
+    dx = D_X[mask]
+    dz = D_Z[mask]
+    
+    ax.scatter(dx, dz, s=1, alpha=0.5)
+    ax.set_xlabel("Input Distance")
+    ax.set_ylabel("Embedding Distance")
+    ax.set_title(title)
+    
+    # Add correlation
+    if len(dx) > 0:
+        corr = np.corrcoef(dx, dz)[0, 1]
+        ax.text(0.05, 0.95, f"Corr: {corr:.3f}", transform=ax.transAxes, verticalalignment='top')
+
 def run_experiment(n_samples=1000, n_iter=500, perplexity=30):
     generator = SyntheticManifolds(n_samples=n_samples)
     datasets = [
@@ -171,121 +226,143 @@ def run_experiment(n_samples=1000, n_iter=500, perplexity=30):
         generator.generate_tree()
     ]
     
-    results = []
-    
-    fig, axes = plt.subplots(2, 2, figsize=(12, 12))
-    axes = axes.flatten()
-    
-    alpha_trajectories = {}
-    
     # Auto-detect device
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     print(f"Using device: {device}")
 
+    # Configurations to test
+    configs = [
+        {"name": "Learned Alpha", "alpha_init": 1.0, "learn_alpha": True, "reg": 0.0},
+        {"name": "Fixed Alpha=1", "alpha_init": 1.0, "learn_alpha": False, "reg": 0.0},
+        {"name": "Learned Alpha + Reg", "alpha_init": 1.0, "learn_alpha": True, "reg": 1.0},
+    ]
+
     for i, (X, labels, name) in enumerate(datasets):
-        print(f"Processing {name}...")
+        print(f"\nProcessing {name}...")
         
         # Normalize input data
-        X = torch.tensor(StandardScaler().fit_transform(X), dtype=torch.float32)
+        X_norm = torch.tensor(StandardScaler().fit_transform(X), dtype=torch.float32)
         
-        # Define Affinities
-        # Input Affinity: Entropic (adaptive sigma)
-        affinity_data = EntropicAffinity(perp=perplexity)
+        # Determine specific settings for this dataset
+        dataset_configs = configs
+        if name == "Synthetic Tree":
+            # Add Hyperbolic config for Tree
+            dataset_configs = configs + [{"name": "Hyperbolic", "alpha_init": 1.0, "learn_alpha": True, "reg": 0.0, "hyperbolic": True}]
         
-        # Embedding Affinity: Learnable Student-t
-        affinity_embedding = LearnableNormalizedGaussianAndStudentAffinity(alpha_init=1.0)
-        affinity_embedding.to(device)
+        # Prepare figure for this dataset
+        n_configs = len(dataset_configs)
+        fig, axes = plt.subplots(n_configs, 3, figsize=(15, 5 * n_configs))
+        if n_configs == 1: axes = axes[None, :]
         
-        # Initialize T to identity to enforce point-to-point correspondence
-        # Row sums must be 1 (since h0 is ones)
-        T_init = torch.eye(n_samples)
-        
-        # Initialize Z with PCA for better starting point
-        from sklearn.decomposition import PCA
-        Z_pca = PCA(n_components=2).fit_transform(X.numpy())
-        Z_init = torch.tensor(Z_pca, dtype=torch.float32)
-        
-        # Initialize DistR model
-        model = DistRWithLogging(
-            affinity_data=affinity_data,
-            affinity_embedding=affinity_embedding,
-            output_sam=n_samples, # Full batch
-            output_dim=2,
-            loss_fun="kl_loss", # Use KL loss for affinities
-            optimizer="Adam",
-            lr=0.1, # Learning rate for Z
-            lr_affinity=0.1, # Learning rate for alpha
-            max_iter=n_iter,
-            max_iter_outer=1, # We only do one outer loop (Z update) for this benchmark
-            init_T=T_init, # Initialize T to identity
-            init=Z_init, # Initialize Z with PCA
-            verbose=True,
-            tol=0, # Disable delta check
-            early_stopping=False, # Disable early stopping to see full trajectory
-            dtype=torch.float32, # Match input dtype
-            device=device
-        )
-        
-        # Fit
-        # DistR expects X.
-        Z = model.fit_transform(X)
-        
-        alphas = model.alpha_logs
-        alpha_trajectories[name] = alphas
-        final_alpha = alphas[-1] if alphas else 1.0
-        
-        # Compute Silhouette Score
-        # We use the final Z embeddings
-        Z_np = Z.detach().cpu().numpy()
-        # Silhouette requires discrete labels.
-        # For Blobs, we have cluster labels.
-        # For Manifolds, we have continuous t. We can discretize t for silhouette or just skip/use a different metric.
-        # Prompt says: "Log the final Silhouette Score of the embeddings."
-        # This implies we should use the provided labels.
-        # For continuous labels, silhouette is not well defined.
-        # Let's discretize continuous labels into bins for silhouette calculation.
-        if name == "Gaussian Blobs":
-            sil_score = silhouette_score(Z_np, labels)
-        else:
-            # Discretize into 10 bins
-            labels_disc = np.digitize(labels, np.linspace(labels.min(), labels.max(), 10))
-            sil_score = silhouette_score(Z_np, labels_disc)
+        for j, config in enumerate(dataset_configs):
+            print(f"  Config: {config['name']}")
             
-        results.append({"Dataset": name, "Converged Alpha": final_alpha, "Silhouette": sil_score})
+            # Input Affinity
+            affinity_data = EntropicAffinity(perp=perplexity)
+            
+            is_hyperbolic = config.get("hyperbolic", False)
+            
+            # Embedding Affinity
+            if is_hyperbolic:
+                affinity_embedding = LorentzHyperbolicAffinity() 
+            else:
+                affinity_embedding = LearnableNormalizedGaussianAndStudentAffinity(alpha_init=config["alpha_init"])
+                if not config["learn_alpha"]:
+                    affinity_embedding.alpha.requires_grad = False
+            
+            if isinstance(affinity_embedding, nn.Module):
+                affinity_embedding.to(device)
+            
+            # Initialize T
+            T_init = torch.eye(n_samples)
+            
+            # Initialize Z
+            if is_hyperbolic:
+                # Use WrappedNormal for Hyperbolic
+                init_method = "WrappedNormal"
+                optimizer_name = "RAdam"
+                Z_init = None # Let DistR handle initialization
+            else:
+                init_method = "random" # Or PCA
+                optimizer_name = "Adam"
+                from sklearn.decomposition import PCA
+                Z_pca = PCA(n_components=2).fit_transform(X_norm.numpy())
+                Z_init = torch.tensor(Z_pca, dtype=torch.float32)
+            
+            # Initialize DistR model
+            model = DistRWithLogging(
+                affinity_data=affinity_data,
+                affinity_embedding=affinity_embedding,
+                output_sam=n_samples,
+                output_dim=2,
+                loss_fun="kl_loss",
+                optimizer=optimizer_name,
+                lr=0.01 if is_hyperbolic else 0.1,
+                lr_affinity=0.1,
+                max_iter=n_iter,
+                max_iter_outer=1,
+                init_T=T_init,
+                init=Z_init if Z_init is not None else init_method,
+                verbose=True,
+                tol=0,
+                early_stopping=False,
+                dtype=torch.float64,
+                device=device,
+                alpha_reg=config.get("reg", 0.0)
+            )
+            
+            Z = model.fit_transform(X_norm.to(dtype=torch.float64))
+            Z_np = Z.detach().cpu().numpy()
+            
+            # Metrics
+            trust = calculate_trustworthiness(X.numpy(), Z_np, k=5, is_hyperbolic=is_hyperbolic)
+            cont = calculate_continuity(X.numpy(), Z_np, k=5, is_hyperbolic=is_hyperbolic)
+            
+            final_alpha = "N/A"
+            if hasattr(model.affinity_embedding, 'alpha'):
+                final_alpha = f"{torch.nn.functional.softplus(model.affinity_embedding.alpha).item():.2f}"
+            
+            print(f"    Trustworthiness: {trust:.4f}, Continuity: {cont:.4f}, Alpha: {final_alpha}")
+            
+            # Plot 1: Scatter
+            ax_sc = axes[j, 0]
+            
+            if is_hyperbolic:
+                # Project to Poincaré for visualization
+                Z_vis = lorentz_to_poincare(Z.detach().cpu()).numpy()
+                # Draw boundary circle
+                circle = plt.Circle((0, 0), 1, color='r', fill=False, linestyle='--')
+                ax_sc.add_artist(circle)
+                ax_sc.set_xlim(-1.1, 1.1)
+                ax_sc.set_ylim(-1.1, 1.1)
+            else:
+                Z_vis = Z_np
+                
+            sc = ax_sc.scatter(Z_vis[:, 0], Z_vis[:, 1], c=labels, cmap='viridis', s=10, alpha=0.7)
+            ax_sc.set_title(f"{config['name']}\nTrust: {trust:.2f}, Cont: {cont:.2f}, Alpha: {final_alpha}")
+            plt.colorbar(sc, ax=ax_sc)
+            
+            # Plot 2: Shepard
+            ax_sh = axes[j, 1]
+            plot_shepard_diagram(X.numpy(), Z_np, ax_sh, is_hyperbolic=is_hyperbolic)
+            
+            # Plot 3: Alpha Trajectory
+            ax_al = axes[j, 2]
+            if model.alpha_logs:
+                ax_al.plot(model.alpha_logs)
+                ax_al.set_title("Alpha Trajectory")
+                ax_al.set_xlabel("Iter")
+            else:
+                ax_al.text(0.5, 0.5, "Fixed Alpha", ha='center')
         
-        # Plot Embeddings
-        ax = axes[i]
-        sc = ax.scatter(Z_np[:, 0], Z_np[:, 1], c=labels, cmap='viridis', s=10, alpha=0.7)
-        ax.set_title(f"{name}\nAlpha: {final_alpha:.2f}")
-        plt.colorbar(sc, ax=ax)
-    
-    plt.tight_layout()
-    plt.savefig('benchmark_embeddings.png')
-    plt.close()
-    
-    # Plot Alpha Dynamics
-    plt.figure(figsize=(10, 6))
-    for name, alphas in alpha_trajectories.items():
-        plt.plot(alphas, label=name)
-    plt.xlabel("Iterations")
-    plt.ylabel("Alpha")
-    plt.title("Alpha Dynamics during Optimization")
-    plt.legend()
-    plt.grid(True)
-    plt.savefig('benchmark_alpha_dynamics.png')
-    plt.close()
-    
-    # Console Report
-    print("\nBenchmark Results:")
-    print(f"{'Dataset':<20} | {'Converged Alpha':<15} | {'Silhouette':<10}")
-    print("-" * 50)
-    for res in results:
-        print(f"{res['Dataset']:<20} | {res['Converged Alpha']:<15.4f} | {res['Silhouette']:<10.4f}")
+        plt.tight_layout()
+        plt.savefig(f'benchmark_{name.replace(" ", "_")}.png')
+        plt.close()
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument('--n_samples', type=int, default=1000)
-    parser.add_argument('--n_iter', type=int, default=500)
+    parser.add_argument('--n_samples', type=int, default=500) # Reduced for speed
+    parser.add_argument('--n_iter', type=int, default=200)
     parser.add_argument('--perplexity', type=float, default=150.0)
     args = parser.parse_args()
     run_experiment(n_samples=args.n_samples, n_iter=args.n_iter, perplexity=args.perplexity)

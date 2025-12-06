@@ -454,21 +454,6 @@ class AffinityBasedDataSummarizer(DataSummarizer):
         init_T="spectral",
     ):
 
-        super(AffinityBasedDataSummarizer, self).__init__(
-            output_sam=output_sam,
-            output_dim=output_dim,
-            optimizer=optimizer,
-            lr=lr,
-            lr_affinity=lr_affinity,
-            init=init,
-            verbose=verbose,
-            tol=tol,
-            max_iter=max_iter,
-            seed=seed,
-            device=device,
-            dtype=dtype,
-        )
-
         if (
             not isinstance(affinity_data, (BaseAffinity, SparseLogAffinity))
             and not affinity_data == "precomputed"
@@ -493,6 +478,21 @@ class AffinityBasedDataSummarizer(DataSummarizer):
         self.affinity_embedding = affinity_embedding
 
         self.init_T = init_T
+
+        super(AffinityBasedDataSummarizer, self).__init__(
+            output_sam=output_sam,
+            output_dim=output_dim,
+            optimizer=optimizer,
+            lr=lr,
+            lr_affinity=lr_affinity,
+            init=init,
+            verbose=verbose,
+            tol=tol,
+            max_iter=max_iter,
+            seed=seed,
+            device=device,
+            dtype=dtype,
+        )
 
     def _compute_affinity(self, X):
         """
@@ -601,6 +601,7 @@ class DistR(AffinityBasedDataSummarizer):
         early_stopping=True,
         lr_affinity=None,
         warmup_iter=0,
+        alpha_reg=0.0,
     ):
 
         super(DistR, self).__init__(
@@ -630,6 +631,7 @@ class DistR(AffinityBasedDataSummarizer):
         self.running_Z = None
         self.early_stopping = early_stopping
         self.warmup_iter = warmup_iter
+        self.alpha_reg = alpha_reg
         if self.affinity_data == "precomputed":
             if self.alpha < 1:
                 raise WrongParameter(
@@ -796,7 +798,7 @@ class DistR(AffinityBasedDataSummarizer):
         """
         Gromov-Wasserstein loss function.
         """
-        PZ = self.affinity_embedding.compute_affinity(self.Z)
+        PZ = self.affinity_embedding.compute_affinity(self.Z).to(dtype=self.dtype)
 
         if self.marginal_loss:
             constC, hC1, hC2 = init_matrix(
@@ -807,7 +809,9 @@ class DistR(AffinityBasedDataSummarizer):
             _, hC1, hC2, fC2t = init_matrix_semirelaxed(
                 self.PX, PZ, self.h0, self.loss_fun, self.marginal_loss, self.backend
             )
-            constC = q.expand([self.N, self.output_sam]) @ fC2t
+            constC = q.expand([self.N, self.output_sam]) @ fC2t.to(dtype=q.dtype)
+            hC1 = hC1.to(dtype=q.dtype)
+            hC2 = hC2.to(dtype=q.dtype)
 
         Loss = gwloss(constC, hC1, hC2, self.T, self.backend)
         return Loss
@@ -816,7 +820,7 @@ class DistR(AffinityBasedDataSummarizer):
         """
         Computes the (fused) Gromov-Wasserstein optimal transport plan.
         """
-        PZ = self.affinity_embedding.compute_affinity(self.Z)
+        PZ = self.affinity_embedding.compute_affinity(self.Z).to(dtype=self.dtype)
         if self.alpha < 1:
             # If fused Gromov-Wasserstein is used (alpha<1), update centroids in input space to compute the linear OT term.
             centroids = barycenter_feat(self.X, self.T)

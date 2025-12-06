@@ -47,7 +47,7 @@ OUTPUT_DIM = 2
 DATASETS = ['coil20', 'fmnist', 'pbmc', 'zeisel', 'mnist']
 
 # 6. Subset Size
-subset_size = 100 # Set to None to use the full dataset
+subset_size = 10000 # Set to None to use the full dataset
 
 # 7. Number of experiment
 n_experiments = 1

@@ -54,7 +54,7 @@ LOSS_FUNCTION = "kl_loss"
 
 # 4. Alpha Analysis Configuration
 ALPHA_ANALYSIS_DATASET = 'coil20' # Dataset to use for alpha analysis
-ALPHA_RANGE = [0.5, 1.0, 1.5, 5.0, 10.0, 50.0, 100.0] # Fixed alpha values to test
+ALPHA_RANGE = [0.01, 0.1, 1.0, 5.0, 10.0, 100] # Fixed alpha values to test
 ALPHA_PROTOTYPES = 20 # Number of prototypes for alpha analysis
 ALPHA_ANALYSIS_ITER = 10000 # Number of iterations for alpha analysis
 subset_size = None # Set to None to use the full dataset
@@ -223,9 +223,9 @@ model_distr = LoggedDistR(
     dtype=torch.float32,
     init="normal",
     init_T="kmeans",
-    tol=1e-9, # Lower tolerance to prevent early stopping
+    tol=1e-5, # Lower tolerance to prevent early stopping
     max_iter_outer=100, # Increase outer loop limit
-    lr_affinity=1,
+    lr_affinity=0.5,
     warmup_iter=50,
     seed=0
 )
