@@ -96,6 +96,7 @@ class DataSummarizer:
         output_dim=2,
         optimizer="Adam",
         lr=1.0,
+        lr_affinity=None,
         init="normal",
         verbose=True,
         tol=1e-6,
@@ -110,6 +111,7 @@ class DataSummarizer:
         assert optimizer in OPTIMIZERS.keys()
         self.optimizer = optimizer
         self.lr = lr
+        self.lr_affinity = lr_affinity if lr_affinity is not None else lr
         self.init = init
         self.max_iter = max_iter
         self.verbose = verbose
@@ -159,12 +161,15 @@ class DataSummarizer:
         """
         pass
 
-    def _update_embedding(self):
+    def _update_embedding(self, max_iter=None):
         """
         Optimize the embeddings coordinates using a gradient-based optimization method.
         """
+        if max_iter is None:
+            max_iter = self.max_iter
+            
         self.Z.requires_grad = True
-        pbar = tqdm(range(self.max_iter), disable=not self.verbose)
+        pbar = tqdm(range(max_iter), disable=not self.verbose)
         for i in pbar:
             self.optimizer.zero_grad()
             Loss = self._embed_loss()
@@ -230,7 +235,13 @@ class DataSummarizer:
             ).to(dtype=self.dtype, device=self.device)
         else:
             raise WrongParameter('init must be in ["normal", "WrappedNormal"]')
-        self.optimizer = OPTIMIZERS[self.optimizer]([self.Z], lr=self.lr)
+        
+        # Collect parameters to optimize
+        params = [{'params': [self.Z], 'lr': self.lr}]
+        if hasattr(self, 'affinity_embedding') and hasattr(self.affinity_embedding, 'parameters'):
+            params.append({'params': self.affinity_embedding.parameters(), 'lr': self.lr_affinity})
+            
+        self.optimizer = OPTIMIZERS[self.optimizer](params)
 
     @abstractmethod
     def _embed_loss(self):
@@ -431,6 +442,7 @@ class AffinityBasedDataSummarizer(DataSummarizer):
         output_dim=2,
         optimizer="Adam",
         lr=1.0,
+        lr_affinity=None,
         init="random",
         verbose=True,
         tol=1e-6,
@@ -447,6 +459,7 @@ class AffinityBasedDataSummarizer(DataSummarizer):
             output_dim=output_dim,
             optimizer=optimizer,
             lr=lr,
+            lr_affinity=lr_affinity,
             init=init,
             verbose=verbose,
             tol=tol,
@@ -586,6 +599,8 @@ class DistR(AffinityBasedDataSummarizer):
         marginal_loss=False,
         entropic_reg=0.0,
         early_stopping=True,
+        lr_affinity=None,
+        warmup_iter=0,
     ):
 
         super(DistR, self).__init__(
@@ -596,6 +611,7 @@ class DistR(AffinityBasedDataSummarizer):
             loss_fun=loss_fun,
             optimizer=optimizer,
             lr=lr,
+            lr_affinity=lr_affinity,
             init=init,
             verbose=verbose,
             tol=tol,
@@ -613,6 +629,7 @@ class DistR(AffinityBasedDataSummarizer):
         self.running_loss = torch.inf
         self.running_Z = None
         self.early_stopping = early_stopping
+        self.warmup_iter = warmup_iter
         if self.affinity_data == "precomputed":
             if self.alpha < 1:
                 raise WrongParameter(
@@ -639,6 +656,20 @@ class DistR(AffinityBasedDataSummarizer):
         self._compute_affinity(X)
 
         self._init_T()
+
+        # Warm-up phase: optimize only alpha (affinity parameters)
+        if self.warmup_iter > 0:
+            if self.verbose:
+                print(f"--- Warm-up phase ({self.warmup_iter} iterations) ---")
+            
+            # Freeze Z
+            self.Z.requires_grad = False
+            
+            # Optimize only affinity parameters
+            self._update_embedding(max_iter=self.warmup_iter)
+            
+            # Unfreeze Z
+            self.Z.requires_grad = True
 
         for t in range(self.max_iter_outer):
 
