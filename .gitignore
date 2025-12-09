@@ -25,10 +25,13 @@ GWDR.egg-info/
 gwdr/demo/test.png
 #gwdr/exps/runs/
 scGeneFit-python/
-
+*.png
 ._*
 *.maf
 *.mtc*
 *.venv
 *PKG-INFO
 *ubyte
+*h5ad
+*csv
+*txt

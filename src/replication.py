@@ -334,9 +334,9 @@ def plot_tradeoff_analysis(results_dict, methods=['DistR', 'DR_then_Clust', 'Clu
     # Dataset Legend
     dataset_handles = [plt.Line2D([0], [0], marker=dataset_markers[d], color='w', label=d, 
                                   markerfacecolor='k', markersize=8) for d in datasets]
-    ax.legend(handles=dataset_handles, title="Datasets", loc='upper left', bbox_to_anchor=(1.05, 0.6))
+    legend2 = ax.legend(handles=dataset_handles, title="Datasets", loc='upper left', bbox_to_anchor=(1.05, 0.6))
 
     plt.tight_layout()
-    plt.savefig(filename, bbox_inches='tight')
+    plt.savefig(filename, bbox_extra_artists=(legend1, legend2), bbox_inches='tight')
     print(f"Trade-off plot saved to {filename}")
 
