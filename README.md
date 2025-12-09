@@ -57,39 +57,6 @@ The script will generate:
 *   `multi_dataset_evolution.png`: Evolution of metrics (NMI, ARI, etc.) vs number of prototypes.
 *   `tradeoff_analysis.png`: Trade-off between local (Homogeneity) and global (NMI) structure.
 
-### API Usage
-
-You can use `DistR` as a standalone scikit-learn compatible estimator:
-
-```python
-import torch
-from src.clust_dr import DistR
-from src.affinities import SymmetricEntropicAffinity, NormalizedGaussianAndStudentAffinity
-
-# 1. Load Data
-X = torch.rand(1000, 50)  # (N, p) samples
-
-# 2. Define Affinities (Kernels)
-affinity_X = SymmetricEntropicAffinity(perp=30)
-affinity_Z = NormalizedGaussianAndStudentAffinity(student=True)
-
-# 3. Initialize and Fit DistR
-model = DistR(
-    affinity_data=affinity_X,
-    affinity_embedding=affinity_Z,
-    output_sam=50,       # Number of prototypes (n)
-    output_dim=2,        # Embedding dimension (d)
-    loss_fun="kl_loss",  # GW Loss function
-    optimizer="Adam",
-    lr=0.1,
-    max_iter=200
-)
-
-# 4. Get Reduced Prototypes
-Z = model.fit_transform(X) # (n, d)
-print(Z.shape) # torch.Size([50, 2])
-```
-
 ## ⚙️ Supported Configurations
 
 The codebase supports all four configurations required for proper benchmarking:
